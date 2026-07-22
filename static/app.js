@@ -11,6 +11,10 @@ const stats = document.querySelector("#stats");
 
 let activeHistoryId = null;
 
+function apiUrl(path) {
+  return new URL(path, window.location.origin).toString();
+}
+
 function formatDate(value) {
   if (!value) return "-";
   const date = new Date(value);
@@ -43,10 +47,23 @@ function linkifyText(value) {
 }
 
 async function fetchJson(url, options) {
-  const response = await fetch(url, options);
-  const payload = await response.json();
+  const response = await fetch(apiUrl(url), options);
+  const contentType = response.headers.get("content-type") || "";
+  const body = await response.text();
+  let payload = null;
+  if (contentType.includes("application/json") && body) {
+    try {
+      payload = JSON.parse(body);
+    } catch (error) {
+      throw new Error(`JSON 파싱 실패: ${response.status} ${response.statusText}`);
+    }
+  }
   if (!response.ok) {
-    throw new Error(payload.error || "요청 처리 중 오류가 발생했습니다.");
+    const detail = payload?.error || body.trim() || response.statusText;
+    throw new Error(`요청 실패: ${response.status} ${detail}`);
+  }
+  if (!payload) {
+    throw new Error(`JSON 응답이 아닙니다: ${response.status} ${body.trim().slice(0, 120)}`);
   }
   return payload;
 }
@@ -148,4 +165,7 @@ refreshHistoryButton.addEventListener("click", () => {
   Promise.all([loadHistory(), loadStats()]);
 });
 
-Promise.all([loadStats(), loadHistory()]);
+Promise.all([loadStats(), loadHistory()]).catch((error) => {
+  answerOutput.textContent = error.message;
+  resultMeta.textContent = "초기화 오류";
+});

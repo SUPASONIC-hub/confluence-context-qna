@@ -23,6 +23,20 @@ def add_cache_headers(response):
     return response
 
 
+@app.errorhandler(404)
+def not_found(error):
+    if request.path.startswith("/api/"):
+        return jsonify({"error": f"API endpoint not found: {request.path}"}), 404
+    return error
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Internal server error"}), 500
+    return error
+
+
 def init_history_table() -> None:
     conn = connect_db()
     conn.execute(
