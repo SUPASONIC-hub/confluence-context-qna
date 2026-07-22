@@ -8,6 +8,7 @@ on:
 jobs:
   ingest:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
       - name: Run resumable ingest batches
         env:
@@ -40,12 +41,22 @@ jobs:
           }
 
           last_error = None
-          for batch in range(1, 13):
-              data = json.dumps({"batch_size": 150}).encode("utf-8")
+          def get_json(path):
+              request = urllib.request.Request(f"{service_url}{path}", method="GET")
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+          config = get_json("/api/admin/config")
+          print(f"admin_token_required={config.get('admin_token_required')}")
+          stats = get_json("/api/stats")
+          print(f"before page_count={stats.get('page_count')} latest={stats.get('latest_updated')}")
+
+          for batch in range(1, 10):
+              data = json.dumps({"batch_size": 80}).encode("utf-8")
               request = urllib.request.Request(url, data=data, headers=headers, method="POST")
               for attempt in range(1, 4):
                   try:
-                      with urllib.request.urlopen(request, timeout=90) as response:
+                      with urllib.request.urlopen(request, timeout=45) as response:
                           body = response.read().decode("utf-8")
                           payload = json.loads(body)
                           print(
@@ -53,6 +64,8 @@ jobs:
                               f"status={payload.get('status')} processed={payload.get('processed')} "
                               f"remaining={payload.get('progress', {}).get('remaining')}"
                           )
+                          stats = get_json("/api/stats")
+                          print(f"page_count={stats.get('page_count')} stale={stats.get('stale')}")
                           if payload.get("status") == "completed":
                               sys.exit(0)
                           break
