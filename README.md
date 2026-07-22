@@ -16,6 +16,7 @@ Copy-Item .env.example .env
 CONFLUENCE_BASE_URL=https://your-domain.atlassian.net/wiki
 CONFLUENCE_EMAIL=you@example.com
 CONFLUENCE_API_TOKEN=your_api_token
+DATABASE_URL=
 ```
 
 선택 값:
@@ -26,6 +27,7 @@ CONFLUENCE_OFFICIAL_SPACES=POLICY,OPS
 ```
 
 `CONFLUENCE_OFFICIAL_SPACES`에는 공식 정책/운영 문서가 들어있는 스페이스 키를 쉼표로 입력합니다. 해당 스페이스의 검색 결과는 점수가 더 높게 계산됩니다.
+`DATABASE_URL`이 있으면 Postgres를 사용하고, 없으면 로컬 SQLite(`data/confluence_qna.sqlite3`)를 사용합니다.
 
 ## 2. 설치
 
@@ -102,9 +104,27 @@ CONFLUENCE_API_TOKEN=your_api_token
 CONFLUENCE_PAGE_LIMIT=0
 CONFLUENCE_SPACE_KEY=
 CONFLUENCE_OFFICIAL_SPACES=
+DATABASE_URL=Render Postgres 연결 문자열
 ```
 
-주의: 현재 저장소의 SQLite DB는 `data/confluence_qna.sqlite3`에 저장되고 `data/`는 Git 커밋에서 제외됩니다. Render의 일반 파일시스템은 배포/재시작 시 영구 저장소로 보장되지 않으므로 운영 안정성이 필요하면 Render Disk 또는 외부 DB(PostgreSQL 등)로 저장소를 분리해야 합니다. 단순 운영은 배포 후 `/api/ingest` 또는 CLI 수집을 다시 실행하는 방식으로 가능합니다.
+`render.yaml`에는 무료 Render Postgres가 포함되어 있습니다. Render Blueprint로 생성하면 `DATABASE_URL`이 웹 서비스에 자동 연결됩니다.
+
+전체 수집 시작:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "https://YOUR-SERVICE.onrender.com/api/ingest" `
+  -ContentType "application/json" `
+  -Body '{"limit":0,"async":true}'
+```
+
+수집 상태 확인:
+
+```text
+https://YOUR-SERVICE.onrender.com/api/ingest/status
+```
+
+주의: Render 무료 Postgres는 1GB 제한과 30일 만료 제한이 있습니다. 무료 조건에서 로컬 SQLite보다 안정적이지만 장기 운영용 영구 DB는 아닙니다.
 
 ## 구현 범위
 
@@ -123,3 +143,5 @@ CONFLUENCE_OFFICIAL_SPACES=
 - 다중 쿼리 검색 후보 생성
 - 결론 후보, 최신성, 히스토리, 리스크 중심 검색 보고서 출력
 - 웹 기반 질문/답변 및 히스토리 저장
+- `DATABASE_URL` 기반 Postgres 저장소와 로컬 SQLite fallback
+- 백그라운드 전체 수집 작업 및 수집 상태 API

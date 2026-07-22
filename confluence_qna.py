@@ -16,8 +16,37 @@ from requests import HTTPError
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:
+    psycopg = None
+    dict_row = None
+
 
 DB_PATH = Path("data/confluence_qna.sqlite3")
+
+
+class PostgresConnection:
+    def __init__(self, conn):
+        self.conn = conn
+        self.is_postgres = True
+
+    def execute(self, sql: str, params: Iterable[object] | None = None):
+        cur = self.conn.cursor()
+        cur.execute(sql.replace("?", "%s"), tuple(params or ()))
+        return cur
+
+    def executemany(self, sql: str, params_seq: Iterable[Iterable[object]]):
+        cur = self.conn.cursor()
+        cur.executemany(sql.replace("?", "%s"), [tuple(params) for params in params_seq])
+        return cur
+
+    def commit(self) -> None:
+        self.conn.commit()
+
+    def close(self) -> None:
+        self.conn.close()
 
 
 @dataclass(frozen=True)
@@ -105,7 +134,57 @@ def explain_http_error(error: HTTPError) -> str:
     return f"{base}\n상세: {detail}\n힌트: {hint}"
 
 
-def connect_db() -> sqlite3.Connection:
+def connect_db():
+    database_url = os.getenv("DATABASE_URL", "")
+    if database_url.startswith(("postgres://", "postgresql://")):
+        return connect_postgres(database_url)
+    return connect_sqlite()
+
+
+def connect_postgres(database_url: str) -> PostgresConnection:
+    if psycopg is None or dict_row is None:
+        raise RuntimeError("Postgres 사용을 위해 `pip install -r requirements.txt`를 실행하세요.")
+    raw_conn = psycopg.connect(database_url, row_factory=dict_row)
+    conn = PostgresConnection(raw_conn)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pages (
+            page_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT '',
+            last_updated TEXT NOT NULL,
+            author TEXT NOT NULL,
+            space TEXT NOT NULL,
+            url TEXT NOT NULL,
+            raw_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS page_chunks (
+            page_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT '',
+            last_updated TEXT NOT NULL,
+            author TEXT NOT NULL,
+            space TEXT NOT NULL,
+            url TEXT NOT NULL,
+            PRIMARY KEY (page_id, chunk_index)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_chunks_space ON page_chunks(space)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_page_chunks_updated ON page_chunks(last_updated)")
+    conn.commit()
+    backfill_page_chunks(conn)
+    return conn
+
+
+def connect_sqlite() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -210,10 +289,11 @@ def backfill_page_chunks(conn: sqlite3.Connection) -> None:
     for row in rows:
         conn.executemany(
             """
-            INSERT OR IGNORE INTO page_chunks(
+            INSERT INTO page_chunks(
                 page_id, chunk_index, title, text, created_at, last_updated, author, space, url
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(page_id, chunk_index) DO NOTHING
             """,
             [
                 (
@@ -788,20 +868,21 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
         ).fetchall()
         rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in like_rows})
 
-    try:
-        fts_rows = conn.execute(
-            """
-            SELECT c.page_id, c.chunk_index, c.title, c.text, c.created_at, c.last_updated, c.author, c.space, c.url
-            FROM page_chunks_fts
-            JOIN page_chunks c ON c.rowid = page_chunks_fts.rowid
-            WHERE page_chunks_fts MATCH ?
-            LIMIT ?
-            """,
-            (fts_query(query), max(limit * 6, 30)),
-        ).fetchall()
-        rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in fts_rows})
-    except sqlite3.OperationalError:
-        pass
+    if not getattr(conn, "is_postgres", False):
+        try:
+            fts_rows = conn.execute(
+                """
+                SELECT c.page_id, c.chunk_index, c.title, c.text, c.created_at, c.last_updated, c.author, c.space, c.url
+                FROM page_chunks_fts
+                JOIN page_chunks c ON c.rowid = page_chunks_fts.rowid
+                WHERE page_chunks_fts MATCH ?
+                LIMIT ?
+                """,
+                (fts_query(query), max(limit * 6, 30)),
+            ).fetchall()
+            rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in fts_rows})
+        except sqlite3.OperationalError:
+            pass
 
     hits = []
     for row in rows_by_id.values():

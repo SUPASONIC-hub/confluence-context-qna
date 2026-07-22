@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request
@@ -12,6 +13,15 @@ from confluence_qna import connect_db, generate_answer, ingest, merged_hits
 
 app = Flask(__name__)
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+INGEST_LOCK = threading.Lock()
+INGEST_STATE = {
+    "running": False,
+    "status": "idle",
+    "started_at": None,
+    "finished_at": None,
+    "limit": None,
+    "error": None,
+}
 
 
 @app.after_request
@@ -39,22 +49,37 @@ def internal_error(error):
 
 def init_history_table() -> None:
     conn = connect_db()
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS query_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            question TEXT NOT NULL,
-            answer TEXT NOT NULL,
-            hits_json TEXT NOT NULL,
-            hit_count INTEGER NOT NULL,
-            answer_mode TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL
+    if getattr(conn, "is_postgres", False):
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS query_history (
+                id SERIAL PRIMARY KEY,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                hits_json TEXT NOT NULL,
+                hit_count INTEGER NOT NULL,
+                answer_mode TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(query_history)").fetchall()}
-    if "answer_mode" not in columns:
-        conn.execute("ALTER TABLE query_history ADD COLUMN answer_mode TEXT NOT NULL DEFAULT ''")
+    else:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS query_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                hits_json TEXT NOT NULL,
+                hit_count INTEGER NOT NULL,
+                answer_mode TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(query_history)").fetchall()}
+        if "answer_mode" not in columns:
+            conn.execute("ALTER TABLE query_history ADD COLUMN answer_mode TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -72,7 +97,49 @@ def page_stats(conn: sqlite3.Connection) -> dict[str, object]:
         "latest_updated": latest,
         "history_count": history_count,
         "answer_mode": "검색 보고서",
+        "ingest": INGEST_STATE,
     }
+
+
+def run_ingest_job(limit: int | None) -> None:
+    with INGEST_LOCK:
+        INGEST_STATE.update(
+            {
+                "running": True,
+                "status": "running",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": None,
+                "limit": limit,
+                "error": None,
+            }
+        )
+    try:
+        class Args:
+            all_spaces = True
+            space = None
+
+            def __init__(self, limit_value: int | None):
+                self.limit = limit_value
+
+        ingest(Args(limit))
+        with INGEST_LOCK:
+            INGEST_STATE.update(
+                {
+                    "running": False,
+                    "status": "completed",
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+    except Exception as error:
+        with INGEST_LOCK:
+            INGEST_STATE.update(
+                {
+                    "running": False,
+                    "status": "failed",
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "error": str(error),
+                }
+            )
 
 
 def serialize_hits(hits) -> list[dict[str, object]]:
@@ -188,17 +255,29 @@ def ask_api():
         answer, answer_mode = generate_answer(question, hits)
         serialized = serialize_hits(hits)
         created_at = datetime.now(timezone.utc).isoformat()
-        cursor = conn.execute(
-            """
-            INSERT INTO query_history(question, answer, hits_json, hit_count, answer_mode, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (question, answer, json.dumps(serialized, ensure_ascii=False), len(hits), answer_mode, created_at),
-        )
+        if getattr(conn, "is_postgres", False):
+            cursor = conn.execute(
+                """
+                INSERT INTO query_history(question, answer, hits_json, hit_count, answer_mode, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (question, answer, json.dumps(serialized, ensure_ascii=False), len(hits), answer_mode, created_at),
+            )
+            history_id = cursor.fetchone()["id"]
+        else:
+            cursor = conn.execute(
+                """
+                INSERT INTO query_history(question, answer, hits_json, hit_count, answer_mode, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (question, answer, json.dumps(serialized, ensure_ascii=False), len(hits), answer_mode, created_at),
+            )
+            history_id = cursor.lastrowid
         conn.commit()
         return jsonify(
             {
-                "id": cursor.lastrowid,
+                "id": history_id,
                 "question": question,
                 "answer": answer,
                 "hits": serialized,
@@ -214,17 +293,26 @@ def ask_api():
 @app.post("/api/ingest")
 def ingest_api():
     payload = request.get_json(silent=True) or {}
-    limit = int(payload.get("limit") or 100)
+    raw_limit = payload.get("limit", 100)
+    limit = None if raw_limit in (None, "", 0, "0", "all") else int(raw_limit)
+    async_mode = bool(payload.get("async", limit is None))
 
-    class Args:
-        all_spaces = True
-        space = None
+    if async_mode:
+        with INGEST_LOCK:
+            if INGEST_STATE["running"]:
+                return jsonify(INGEST_STATE), 409
+            INGEST_STATE.update({"status": "queued", "limit": limit, "error": None})
+        thread = threading.Thread(target=run_ingest_job, args=(limit,), daemon=True)
+        thread.start()
+        return jsonify(INGEST_STATE), 202
 
-        def __init__(self, limit_value: int):
-            self.limit = limit_value
+    run_ingest_job(limit)
+    return jsonify(INGEST_STATE)
 
-    ingest(Args(limit))
-    return jsonify({"status": "completed", "limit": limit})
+
+@app.get("/api/ingest/status")
+def ingest_status():
+    return jsonify(INGEST_STATE)
 
 
 if __name__ == "__main__":
