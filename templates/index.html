@@ -4,15 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Confluence Knowledge QNA</title>
-    <link rel="icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-4') }}" />
-    <link rel="apple-touch-icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-4') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260722-4') }}" />
+    <link rel="icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260722-5') }}" />
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar" aria-label="질문 히스토리">
         <div class="brand">
-          <img class="brand-mark" src="{{ url_for('static', filename='profile-logo.jpg', v='20260722-4') }}" alt="" />
+          <img class="brand-mark" src="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" alt="" />
           <div>
             <h1>Confluence QNA</h1>
             <p>Policy context desk</p>
@@ -23,6 +23,20 @@
           <div><strong>-</strong><span>문서</span></div>
           <div><strong>-</strong><span>스페이스</span></div>
           <div><strong>-</strong><span>질문</span></div>
+        </div>
+
+        <div class="ops-panel">
+          <div class="history-head">
+            <h2>운영</h2>
+            <button id="refreshStats" type="button" title="상태 새로고침">↻</button>
+          </div>
+          <input id="adminTokenInput" class="token-input" type="password" placeholder="관리자 토큰" autocomplete="off" />
+          <div class="ops-actions">
+            <button id="saveTokenButton" type="button">토큰 저장</button>
+            <button id="runBatchButton" type="button">배치 수집</button>
+          </div>
+          <a class="export-link" id="exportLink" href="/api/export/pages.csv">CSV 백업</a>
+          <div class="ops-status" id="opsStatus">대기 중</div>
         </div>
 
         <div class="history-head">
@@ -60,12 +74,13 @@
               <h3>근거 문서</h3>
               <span id="sourceCount">0개</span>
             </div>
+            <div id="sourceFilters" class="source-filters"></div>
             <div id="sourceList" class="source-list"></div>
           </aside>
         </section>
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js', v='20260722-4') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260722-5') }}"></script>
   </body>
 </html>

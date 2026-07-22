@@ -1,0 +1,31 @@
+name: Ingest Confluence Batch
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run resumable ingest batches
+        env:
+          SERVICE_URL: ${{ secrets.SERVICE_URL }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVICE_URL:-}" ]; then
+            echo "SERVICE_URL secret is required"
+            exit 1
+          fi
+          for i in $(seq 1 8); do
+            response=$(curl -fsS \
+              -H "Content-Type: application/json" \
+              -H "X-Admin-Token: ${ADMIN_TOKEN:-}" \
+              -d '{"batch_size":250}' \
+              "${SERVICE_URL%/}/api/ingest/batch")
+            echo "$response"
+            echo "$response" | grep -q '"status":"completed"' && break
+            sleep 5
+          done

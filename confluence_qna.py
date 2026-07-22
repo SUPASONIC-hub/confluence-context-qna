@@ -57,6 +57,8 @@ class Config:
     space_key: str | None
     page_limit: int
     official_spaces: tuple[str, ...]
+    space_weights: dict[str, float]
+    document_type_weights: dict[str, float]
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,8 @@ class SearchHit:
 
 def load_config() -> Config:
     load_dotenv()
+    space_weights = parse_weight_map(os.getenv("CONFLUENCE_SPACE_WEIGHTS", ""))
+    doc_type_weights = parse_weight_map(os.getenv("CONFLUENCE_DOCUMENT_TYPE_WEIGHTS", ""))
     return Config(
         base_url=os.getenv("CONFLUENCE_BASE_URL", "").rstrip("/"),
         email=os.getenv("CONFLUENCE_EMAIL", ""),
@@ -88,7 +92,22 @@ def load_config() -> Config:
             for space in os.getenv("CONFLUENCE_OFFICIAL_SPACES", "").split(",")
             if space.strip()
         ),
+        space_weights=space_weights,
+        document_type_weights=doc_type_weights,
     )
+
+
+def parse_weight_map(raw: str) -> dict[str, float]:
+    result = {}
+    for item in raw.split(","):
+        if not item.strip() or ":" not in item:
+            continue
+        key, value = item.split(":", 1)
+        try:
+            result[key.strip()] = float(value.strip())
+        except ValueError:
+            continue
+    return result
 
 
 def require_confluence_config(config: Config) -> None:
@@ -938,7 +957,7 @@ def term_score(
     terms: list[str],
     essentials: list[str],
     preferred_doc_types: set[str],
-    official_spaces: tuple[str, ...],
+    config: Config,
 ) -> tuple[float, list[str]]:
     title = row["title"].lower()
     text = row["text"].lower()
@@ -966,8 +985,10 @@ def term_score(
         score += 5.0
     if document_type in {"정책", "결정사항"} and any(term in title for term in ("최종", "확정", "정책", "기준")):
         score += 4.0
-    if row["space"] in official_spaces:
+    if row["space"] in config.official_spaces:
         score += 4.0
+    score += config.space_weights.get(row["space"], 0.0)
+    score += config.document_type_weights.get(document_type, 0.0)
     return score, matched
 
 
@@ -1016,7 +1037,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
 
     hits = []
     for row in rows_by_id.values():
-        score, matched = term_score(row, terms, essentials, preferred_doc_types, config.official_spaces)
+        score, matched = term_score(row, terms, essentials, preferred_doc_types, config)
         if matched and score > -999:
             hits.append(row_to_hit(row, score, matched))
     return sorted(hits, key=lambda hit: (hit.score, hit.last_updated), reverse=True)[:limit]

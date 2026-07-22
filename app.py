@@ -7,9 +7,9 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
-from confluence_qna import connect_db, generate_answer, ingest, ingest_batch, ingest_progress_status, merged_hits
+from confluence_qna import connect_db, generate_answer, ingest, ingest_batch, ingest_progress_status, load_config, merged_hits
 
 
 app = Flask(__name__)
@@ -58,6 +58,23 @@ def internal_error(error):
     return error
 
 
+def admin_required() -> bool:
+    expected = os.getenv("ADMIN_TOKEN", "")
+    if not expected:
+        return True
+    auth = request.headers.get("Authorization", "")
+    supplied = request.headers.get("X-Admin-Token", "")
+    if auth.startswith("Bearer "):
+        supplied = auth.removeprefix("Bearer ").strip()
+    return supplied == expected
+
+
+def require_admin_response():
+    if admin_required():
+        return None
+    return jsonify({"error": "admin token required"}), 401
+
+
 def init_history_table() -> None:
     conn = connect_db()
     if getattr(conn, "is_postgres", False):
@@ -96,6 +113,7 @@ def init_history_table() -> None:
 
 
 def page_stats(conn: sqlite3.Connection) -> dict[str, object]:
+    config = load_config()
     page_count = conn.execute("SELECT COUNT(*) AS count FROM pages").fetchone()["count"]
     space_rows = conn.execute(
         "SELECT space, COUNT(*) AS count FROM pages GROUP BY space ORDER BY count DESC"
@@ -109,6 +127,11 @@ def page_stats(conn: sqlite3.Connection) -> dict[str, object]:
         "history_count": history_count,
         "answer_mode": "검색 보고서",
         "ingest": INGEST_STATE,
+        "weights": {
+            "official_spaces": list(config.official_spaces),
+            "space_weights": config.space_weights,
+            "document_type_weights": config.document_type_weights,
+        },
         "stale": False,
     }
 
@@ -334,6 +357,9 @@ def ask_api():
 
 @app.post("/api/ingest")
 def ingest_api():
+    auth_error = require_admin_response()
+    if auth_error:
+        return auth_error
     payload = request.get_json(silent=True) or {}
     raw_limit = payload.get("limit", 100)
     limit = None if raw_limit in (None, "", 0, "0", "all") else int(raw_limit)
@@ -368,12 +394,67 @@ def ingest_status():
 
 @app.post("/api/ingest/batch")
 def ingest_batch_api():
+    auth_error = require_admin_response()
+    if auth_error:
+        return auth_error
     payload = request.get_json(silent=True) or {}
     batch_size = int(payload.get("batch_size") or 100)
     reset = bool(payload.get("reset"))
     batch_size = max(1, min(batch_size, 300))
     result = ingest_batch(batch_size=batch_size, reset=reset)
     return jsonify(result)
+
+
+@app.get("/api/admin/config")
+def admin_config():
+    config = load_config()
+    return jsonify(
+        {
+            "admin_token_required": bool(os.getenv("ADMIN_TOKEN", "")),
+            "official_spaces": list(config.official_spaces),
+            "space_weights": config.space_weights,
+            "document_type_weights": config.document_type_weights,
+        }
+    )
+
+
+@app.get("/api/export/pages.csv")
+def export_pages_csv():
+    auth_error = require_admin_response()
+    if auth_error:
+        return auth_error
+    conn = connect_db()
+    try:
+        rows = conn.execute(
+            """
+            SELECT page_id, title, created_at, last_updated, author, space, url
+            FROM pages
+            ORDER BY space, title
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    def generate():
+        yield "page_id,title,created_at,last_updated,author,space,url\n"
+        for row in rows:
+            values = [
+                row["page_id"],
+                row["title"],
+                row["created_at"],
+                row["last_updated"],
+                row["author"],
+                row["space"],
+                row["url"],
+            ]
+            escaped = ['"' + str(value or "").replace('"', '""') + '"' for value in values]
+            yield ",".join(escaped) + "\n"
+
+    return Response(
+        generate(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=confluence_pages.csv"},
+    )
 
 
 if __name__ == "__main__":

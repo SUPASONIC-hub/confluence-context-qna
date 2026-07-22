@@ -24,9 +24,14 @@ DATABASE_URL=
 ```dotenv
 CONFLUENCE_SPACE_KEY=
 CONFLUENCE_OFFICIAL_SPACES=POLICY,OPS
+CONFLUENCE_SPACE_WEIGHTS=POLICY:5,OPS:3
+CONFLUENCE_DOCUMENT_TYPE_WEIGHTS=정책:4,매뉴얼:3,결정사항:3,이슈:2
+ADMIN_TOKEN=change_me
 ```
 
 `CONFLUENCE_OFFICIAL_SPACES`에는 공식 정책/운영 문서가 들어있는 스페이스 키를 쉼표로 입력합니다. 해당 스페이스의 검색 결과는 점수가 더 높게 계산됩니다.
+`CONFLUENCE_SPACE_WEIGHTS`와 `CONFLUENCE_DOCUMENT_TYPE_WEIGHTS`는 검색 랭킹 보정값입니다. `키:점수`를 쉼표로 연결합니다.
+`ADMIN_TOKEN`을 설정하면 수집/백업 API 호출 시 `X-Admin-Token` 헤더가 필요합니다.
 `DATABASE_URL`이 있으면 Postgres를 사용하고, 없으면 로컬 SQLite(`data/confluence_qna.sqlite3`)를 사용합니다.
 
 ## 2. 설치
@@ -104,24 +109,45 @@ CONFLUENCE_API_TOKEN=your_api_token
 CONFLUENCE_PAGE_LIMIT=0
 CONFLUENCE_SPACE_KEY=
 CONFLUENCE_OFFICIAL_SPACES=
+CONFLUENCE_SPACE_WEIGHTS=
+CONFLUENCE_DOCUMENT_TYPE_WEIGHTS=정책:4,매뉴얼:3,결정사항:3,이슈:2
+ADMIN_TOKEN=strong-random-token
 DATABASE_URL=Render Postgres 연결 문자열
 ```
 
 `render.yaml`에는 무료 Render Postgres가 포함되어 있습니다. Render Blueprint로 생성하면 `DATABASE_URL`이 웹 서비스에 자동 연결됩니다.
 
-전체 수집 시작:
+권장 수집 방식은 재시작에 안전한 배치 수집입니다.
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  -Uri "https://YOUR-SERVICE.onrender.com/api/ingest" `
+  -Uri "https://YOUR-SERVICE.onrender.com/api/ingest/batch" `
+  -Headers @{ "X-Admin-Token" = "ADMIN_TOKEN_VALUE" } `
   -ContentType "application/json" `
-  -Body '{"limit":0,"async":true}'
+  -Body '{"batch_size":250}'
 ```
 
 수집 상태 확인:
 
 ```text
 https://YOUR-SERVICE.onrender.com/api/ingest/status
+```
+
+CSV 백업:
+
+```text
+https://YOUR-SERVICE.onrender.com/api/export/pages.csv
+```
+
+`ADMIN_TOKEN`이 설정되어 있으면 브라우저 운영 패널에 토큰을 저장한 뒤 CSV 백업을 누르거나, `X-Admin-Token` 헤더로 호출합니다.
+
+GitHub Actions 예약 수집:
+
+`.github/workflows/ingest-batch.yml`이 포함되어 있습니다. GitHub repository secrets에 아래 값을 설정하면 6시간마다 배치 수집을 호출합니다.
+
+```text
+SERVICE_URL=https://YOUR-SERVICE.onrender.com
+ADMIN_TOKEN=Render에 설정한 ADMIN_TOKEN
 ```
 
 주의: Render 무료 Postgres는 1GB 제한과 30일 만료 제한이 있습니다. 무료 조건에서 로컬 SQLite보다 안정적이지만 장기 운영용 영구 DB는 아닙니다.
