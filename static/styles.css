@@ -1,13 +1,16 @@
 :root {
   color-scheme: light;
-  --bg: #f6f7f9;
+  --bg: #edf1f5;
   --panel: #ffffff;
-  --panel-subtle: #f0f3f7;
+  --panel-subtle: #f3f7fb;
   --text: #1d2430;
   --muted: #697586;
-  --line: #d9dee8;
-  --accent: #176b87;
-  --accent-dark: #0f4f64;
+  --line: #d7dee8;
+  --accent: #0f766e;
+  --accent-dark: #115e59;
+  --sidebar: #17212f;
+  --sidebar-soft: #223044;
+  --highlight: #f5b84b;
   --risk: #b54708;
   --shadow: 0 18px 45px rgba(29, 36, 48, 0.08);
 }
@@ -19,7 +22,9 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: var(--bg);
+  background:
+    linear-gradient(180deg, rgba(15, 118, 110, 0.08), transparent 280px),
+    var(--bg);
   color: var(--text);
   font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 }
@@ -40,8 +45,9 @@ textarea {
   flex-direction: column;
   gap: 20px;
   padding: 24px;
-  background: #202936;
+  background: linear-gradient(180deg, var(--sidebar), #20283a);
   color: #f7fafc;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .brand {
@@ -56,9 +62,10 @@ textarea {
   width: 42px;
   height: 42px;
   border-radius: 8px;
-  background: #70c1b3;
+  background: var(--highlight);
   color: #12202a;
   font-weight: 800;
+  box-shadow: 0 10px 24px rgba(245, 184, 75, 0.28);
 }
 
 .brand h1,
@@ -88,7 +95,7 @@ textarea {
   padding: 12px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.075);
 }
 
 .stats strong,
@@ -128,6 +135,11 @@ textarea {
   cursor: pointer;
 }
 
+.history-head button:hover {
+  background: rgba(245, 184, 75, 0.18);
+  border-color: rgba(245, 184, 75, 0.55);
+}
+
 .history-list {
   display: flex;
   flex-direction: column;
@@ -149,8 +161,8 @@ textarea {
 
 .history-item:hover,
 .history-item.active {
-  background: rgba(112, 193, 179, 0.16);
-  border-color: rgba(112, 193, 179, 0.55);
+  background: rgba(15, 118, 110, 0.28);
+  border-color: rgba(94, 234, 212, 0.55);
 }
 
 .history-item strong {
@@ -168,7 +180,7 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  padding: 28px;
+  padding: 30px;
   min-width: 0;
 }
 
@@ -186,11 +198,12 @@ textarea {
   grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
   gap: 24px;
   padding: 24px;
+  border-top: 4px solid var(--accent);
 }
 
 .eyebrow {
   margin: 0 0 8px;
-  color: var(--accent);
+  color: var(--accent-dark);
   font-size: 13px;
   font-weight: 700;
   text-transform: uppercase;
@@ -237,6 +250,10 @@ button[type="submit"] {
   cursor: pointer;
 }
 
+button[type="submit"]:hover {
+  background: var(--accent-dark);
+}
+
 button[type="submit"]:disabled {
   cursor: wait;
   background: #8da5af;
@@ -278,6 +295,7 @@ button[type="submit"]:disabled {
   overflow: auto;
   font-family: "Consolas", "D2Coding", monospace;
   line-height: 1.65;
+  background: linear-gradient(180deg, #ffffff, #fbfcfd);
 }
 
 .answer-output a {
@@ -299,6 +317,7 @@ button[type="submit"]:disabled {
   border-radius: 8px;
   padding: 14px;
   background: #fbfcfd;
+  border-left: 4px solid var(--accent);
 }
 
 .source-card a {
