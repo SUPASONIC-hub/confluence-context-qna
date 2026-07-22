@@ -177,6 +177,16 @@ def connect_postgres(database_url: str) -> PostgresConnection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ingest_progress (
+            space TEXT PRIMARY KEY,
+            next_start INTEGER NOT NULL DEFAULT 0,
+            completed BOOLEAN NOT NULL DEFAULT FALSE,
+            updated_at TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_page_chunks_space ON page_chunks(space)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_page_chunks_updated ON page_chunks(last_updated)")
     conn.commit()
@@ -220,6 +230,13 @@ def connect_sqlite() -> sqlite3.Connection:
             space TEXT NOT NULL,
             url TEXT NOT NULL,
             PRIMARY KEY (page_id, chunk_index)
+        );
+
+        CREATE TABLE IF NOT EXISTS ingest_progress (
+            space TEXT PRIMARY KEY,
+            next_start INTEGER NOT NULL DEFAULT 0,
+            completed BOOLEAN NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT ''
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS page_chunks_fts USING fts5(
@@ -415,6 +432,21 @@ def iter_pages(config: Config, space: str, limit: int | None) -> Iterable[dict]:
         start += len(results)
 
 
+def fetch_page_batch(config: Config, space: str, start: int, limit: int) -> list[dict]:
+    data = confluence_get(
+        config,
+        "/rest/api/content",
+        {
+            "type": "page",
+            "spaceKey": space,
+            "limit": limit,
+            "start": start,
+            "expand": "body.storage,version,history,space",
+        },
+    )
+    return data.get("results", [])
+
+
 def upsert_page(conn: sqlite3.Connection, config: Config, item: dict) -> None:
     version = item.get("version", {})
     history = item.get("history", {})
@@ -465,6 +497,104 @@ def upsert_page(conn: sqlite3.Connection, config: Config, item: dict) -> None:
             for index, chunk in enumerate(split_chunks(text))
         ],
     )
+
+
+def utc_now_text() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def initialize_ingest_progress(conn, config: Config, reset: bool = False) -> None:
+    spaces = list(iter_spaces(config))
+    if reset:
+        conn.execute("DELETE FROM ingest_progress")
+    for space in spaces:
+        conn.execute(
+            """
+            INSERT INTO ingest_progress(space, next_start, completed, updated_at)
+            VALUES (?, 0, ?, ?)
+            ON CONFLICT(space) DO NOTHING
+            """,
+            (space, False, utc_now_text()),
+        )
+    conn.commit()
+
+
+def ingest_progress_status(conn) -> dict[str, object]:
+    rows = conn.execute(
+        """
+        SELECT space, next_start, completed, updated_at
+        FROM ingest_progress
+        ORDER BY space
+        """
+    ).fetchall()
+    spaces = [
+        {
+            "space": row["space"],
+            "next_start": row["next_start"],
+            "completed": bool(row["completed"]),
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+    return {
+        "spaces": spaces,
+        "completed": bool(spaces) and all(space["completed"] for space in spaces),
+        "remaining": sum(1 for space in spaces if not space["completed"]),
+    }
+
+
+def ingest_batch(batch_size: int = 100, reset: bool = False) -> dict[str, object]:
+    config = load_config()
+    require_confluence_config(config)
+    conn = connect_db()
+    processed = 0
+    touched_spaces = []
+    try:
+        initialize_ingest_progress(conn, config, reset=reset)
+        while processed < batch_size:
+            row = conn.execute(
+                """
+                SELECT space, next_start
+                FROM ingest_progress
+                WHERE completed = ?
+                ORDER BY space
+                LIMIT 1
+                """,
+                (False,),
+            ).fetchone()
+            if row is None:
+                break
+
+            current_limit = min(100, batch_size - processed)
+            results = fetch_page_batch(config, row["space"], int(row["next_start"]), current_limit)
+            for item in results:
+                upsert_page(conn, config, item)
+            processed += len(results)
+            touched_spaces.append(row["space"])
+
+            completed = len(results) < current_limit
+            next_start = int(row["next_start"]) + len(results)
+            conn.execute(
+                """
+                UPDATE ingest_progress
+                SET next_start = ?, completed = ?, updated_at = ?
+                WHERE space = ?
+                """,
+                (next_start, completed, utc_now_text(), row["space"]),
+            )
+            conn.commit()
+            if not results:
+                continue
+        status = ingest_progress_status(conn)
+        return {
+            "status": "completed" if status["completed"] else "running",
+            "batch_size": batch_size,
+            "processed": processed,
+            "touched_spaces": sorted(set(touched_spaces)),
+            "progress": status,
+        }
+    finally:
+        conn.close()
 
 
 def ingest(args: argparse.Namespace) -> None:

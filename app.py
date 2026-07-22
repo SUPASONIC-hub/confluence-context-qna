@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
-from confluence_qna import connect_db, generate_answer, ingest, merged_hits
+from confluence_qna import connect_db, generate_answer, ingest, ingest_batch, ingest_progress_status, merged_hits
 
 
 app = Flask(__name__)
@@ -354,7 +354,26 @@ def ingest_api():
 
 @app.get("/api/ingest/status")
 def ingest_status():
-    return jsonify(INGEST_STATE)
+    payload = dict(INGEST_STATE)
+    try:
+        conn = connect_db()
+        try:
+            payload["progress"] = ingest_progress_status(conn)
+        finally:
+            conn.close()
+    except Exception as error:
+        payload["progress_error"] = str(error)
+    return jsonify(payload)
+
+
+@app.post("/api/ingest/batch")
+def ingest_batch_api():
+    payload = request.get_json(silent=True) or {}
+    batch_size = int(payload.get("batch_size") or 100)
+    reset = bool(payload.get("reset"))
+    batch_size = max(1, min(batch_size, 300))
+    result = ingest_batch(batch_size=batch_size, reset=reset)
+    return jsonify(result)
 
 
 if __name__ == "__main__":
