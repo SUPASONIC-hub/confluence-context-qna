@@ -4,16 +4,18 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Confluence Knowledge QNA</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260722-3') }}" />
+    <link rel="icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-4') }}" />
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-4') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260722-4') }}" />
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar" aria-label="질문 히스토리">
         <div class="brand">
-          <div class="brand-mark">K</div>
+          <img class="brand-mark" src="{{ url_for('static', filename='profile-logo.jpg', v='20260722-4') }}" alt="" />
           <div>
-            <h1>Knowledge QNA</h1>
-            <p>Confluence context search</p>
+            <h1>Confluence QNA</h1>
+            <p>Policy context desk</p>
           </div>
         </div>
 
@@ -33,8 +35,8 @@
       <main class="workspace">
         <section class="query-panel">
           <div>
-            <p class="eyebrow">Policy and decision knowledge base</p>
-            <h2>질문을 입력하면 최신 문서, 히스토리, 리스크 후보를 함께 찾습니다.</h2>
+            <p class="eyebrow">Knowledge desk</p>
+            <h2>Confluence 문서에서 정책 근거와 리스크 후보를 빠르게 찾습니다.</h2>
           </div>
           <form id="askForm" class="ask-form">
             <textarea id="questionInput" rows="3" placeholder="예: 현재 환불 정책 프로세스가 정상인가요?"></textarea>
@@ -64,6 +66,6 @@
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js', v='20260722-3') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260722-4') }}"></script>
   </body>
 </html>

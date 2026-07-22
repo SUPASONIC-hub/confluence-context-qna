@@ -4,9 +4,10 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_from_directory
 
 from confluence_qna import connect_db, generate_answer, ingest, merged_hits
 
@@ -21,6 +22,16 @@ INGEST_STATE = {
     "finished_at": None,
     "limit": None,
     "error": None,
+}
+STATS_LOCK = threading.Lock()
+LAST_STATS = {
+    "page_count": 0,
+    "spaces": [],
+    "latest_updated": None,
+    "history_count": 0,
+    "answer_mode": "검색 보고서",
+    "ingest": INGEST_STATE.copy(),
+    "stale": True,
 }
 
 
@@ -98,7 +109,38 @@ def page_stats(conn: sqlite3.Connection) -> dict[str, object]:
         "history_count": history_count,
         "answer_mode": "검색 보고서",
         "ingest": INGEST_STATE,
+        "stale": False,
     }
+
+
+def read_page_stats_with_retry(max_attempts: int = 4) -> dict[str, object]:
+    last_error = None
+    for attempt in range(max_attempts):
+        conn = None
+        try:
+            init_history_table()
+            conn = connect_db()
+            stats_payload = page_stats(conn)
+            with STATS_LOCK:
+                LAST_STATS.clear()
+                LAST_STATS.update(stats_payload)
+            return stats_payload
+        except Exception as error:
+            last_error = error
+            time.sleep(0.15 * (attempt + 1))
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    with STATS_LOCK:
+        fallback = dict(LAST_STATS)
+    fallback["ingest"] = dict(INGEST_STATE)
+    fallback["stale"] = True
+    fallback["warning"] = f"통계 조회 재시도 후 마지막 정상 값을 표시합니다: {last_error}"
+    return fallback
 
 
 def run_ingest_job(limit: int | None) -> None:
@@ -173,14 +215,14 @@ def healthz():
     return jsonify({"status": "ok"})
 
 
+@app.get("/favicon.ico")
+def favicon():
+    return send_from_directory(app.static_folder, "profile-logo.jpg", mimetype="image/jpeg")
+
+
 @app.get("/api/stats")
 def stats():
-    init_history_table()
-    conn = connect_db()
-    try:
-        return jsonify(page_stats(conn))
-    finally:
-        conn.close()
+    return jsonify(read_page_stats_with_retry())
 
 
 @app.get("/api/history")

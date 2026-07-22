@@ -69,11 +69,16 @@ async function fetchJson(url, options) {
 }
 
 function renderStats(payload) {
+  const ingest = payload.ingest || {};
+  const ingestLabel = ingest.running ? "수집 중" : (ingest.status || "대기");
+  const latest = formatDate(payload.latest_updated);
   stats.innerHTML = `
     <div><strong>${payload.page_count}</strong><span>문서</span></div>
-    <div><strong>${payload.spaces.length}</strong><span>스페이스</span></div>
+    <div><strong>${(payload.spaces || []).length}</strong><span>스페이스</span></div>
     <div><strong>${payload.history_count}</strong><span>질문</span></div>
-    <div><strong>${escapeText(payload.answer_mode || "-")}</strong><span>답변</span></div>
+    <div><strong>${escapeText(ingestLabel)}</strong><span>수집</span></div>
+    <div><strong>${escapeText(latest)}</strong><span>최신</span></div>
+    <div><strong>${payload.stale ? "캐시" : "실시간"}</strong><span>통계</span></div>
   `;
 }
 
