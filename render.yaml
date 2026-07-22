@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: confluence-context-qna
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    autoDeploy: true
+    healthCheckPath: /healthz
+    envVars:
+      - key: CONFLUENCE_BASE_URL
+        sync: false
+      - key: CONFLUENCE_EMAIL
+        sync: false
+      - key: CONFLUENCE_API_TOKEN
+        sync: false
+      - key: CONFLUENCE_PAGE_LIMIT
+        value: "0"
+      - key: CONFLUENCE_SPACE_KEY
+        sync: false
+      - key: CONFLUENCE_OFFICIAL_SPACES
+        sync: false

@@ -1,0 +1,125 @@
+# Confluence Context QNA
+
+Confluence 문서를 수집해 SQLite FTS 검색 인덱스를 만들고, 최신성 가중치와 다중 쿼리 검색으로 질의에 대한 정책 답변, 정상 여부, 의사결정 히스토리, 잠재 리스크를 찾는 프로토타입입니다.
+
+## 1. 환경 설정
+
+```powershell
+Copy-Item .env.example .env
+```
+
+`.env`에 본인 값만 채우세요. `.env`는 `.gitignore`에 포함되어 커밋 대상에서 제외됩니다.
+
+필수 값:
+
+```dotenv
+CONFLUENCE_BASE_URL=https://your-domain.atlassian.net/wiki
+CONFLUENCE_EMAIL=you@example.com
+CONFLUENCE_API_TOKEN=your_api_token
+```
+
+선택 값:
+
+```dotenv
+CONFLUENCE_SPACE_KEY=
+CONFLUENCE_OFFICIAL_SPACES=POLICY,OPS
+```
+
+`CONFLUENCE_OFFICIAL_SPACES`에는 공식 정책/운영 문서가 들어있는 스페이스 키를 쉼표로 입력합니다. 해당 스페이스의 검색 결과는 점수가 더 높게 계산됩니다.
+
+## 2. 설치
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+## 3. Confluence 문서 수집
+
+접속과 권한을 먼저 점검:
+
+```powershell
+python .\confluence_qna.py diagnose
+```
+
+접근 가능한 모든 스페이스를 수집:
+
+```powershell
+python .\confluence_qna.py ingest --all-spaces
+```
+
+기본값은 접근 가능한 전체 페이지 수집입니다. 빠른 테스트가 필요할 때만 `--limit`을 씁니다. `--limit`은 전체 제한이 아니라 스페이스별 최대 페이지 수입니다.
+
+특정 스페이스만 수집:
+
+```powershell
+python .\confluence_qna.py ingest --space KEY --limit 100
+```
+
+`.env`의 `CONFLUENCE_SPACE_KEY`를 사용할 수도 있습니다. `--space`와 `CONFLUENCE_SPACE_KEY`가 둘 다 없으면 기본적으로 접근 가능한 모든 스페이스를 수집합니다.
+
+```powershell
+python .\confluence_qna.py ingest
+```
+
+## 4. 질문
+
+```powershell
+python .\confluence_qna.py ask "현재 환불 정책 프로세스가 정상인가요?"
+```
+
+검색된 근거, 최신 문서 후보, 히스토리 후보, 리스크 후보를 구조화해서 보여줍니다.
+
+## 5. Knowledge Management 인터페이스
+
+```powershell
+python .\app.py
+```
+
+브라우저에서 `http://127.0.0.1:5050`을 열면 질문 입력, 답변 결과, 근거 문서, 질문 히스토리를 한 화면에서 볼 수 있습니다. 질문 히스토리는 `data/confluence_qna.sqlite3`에 저장됩니다.
+
+## 6. Git 및 Render 운영
+
+이 프로젝트는 Render Blueprint용 `render.yaml`을 포함합니다. GitHub 저장소에 push한 뒤 Render에서 Blueprint 또는 Web Service로 연결할 수 있습니다.
+
+Render 설정:
+
+```text
+Build Command: pip install -r requirements.txt
+Start Command: gunicorn app:app
+Health Check Path: /healthz
+```
+
+Render 환경 변수에는 `.env` 값을 직접 넣되, `.env` 파일 자체는 커밋하지 않습니다.
+
+필수 Render 환경 변수:
+
+```dotenv
+CONFLUENCE_BASE_URL=https://your-domain.atlassian.net/wiki
+CONFLUENCE_EMAIL=you@example.com
+CONFLUENCE_API_TOKEN=your_api_token
+CONFLUENCE_PAGE_LIMIT=0
+CONFLUENCE_SPACE_KEY=
+CONFLUENCE_OFFICIAL_SPACES=
+```
+
+주의: 현재 저장소의 SQLite DB는 `data/confluence_qna.sqlite3`에 저장되고 `data/`는 Git 커밋에서 제외됩니다. Render의 일반 파일시스템은 배포/재시작 시 영구 저장소로 보장되지 않으므로 운영 안정성이 필요하면 Render Disk 또는 외부 DB(PostgreSQL 등)로 저장소를 분리해야 합니다. 단순 운영은 배포 후 `/api/ingest` 또는 CLI 수집을 다시 실행하는 방식으로 가능합니다.
+
+## 구현 범위
+
+- Confluence REST API 수집
+- 접근 가능한 전체 스페이스 순회 수집
+- 본문 HTML 텍스트 정제
+- `last_updated`, 작성자, 스페이스, URL 메타데이터 저장
+- 등록일, 수정일, 작성자, 스페이스, URL 메타데이터 저장
+- SQLite FTS5와 한국어 키워드 포함 검색 병행
+- 문서 본문 chunk 분할 검색
+- 한국어 조사/어미 제거 기반 질문 키워드 정제
+- 정책/매뉴얼/회의록/결정사항/기획서/이슈 문서 유형 분류
+- 질문 의도별 문서 유형 가중치
+- 공식 스페이스 가중치
+- 질문 의도 키워드 확장 및 최신성 기반 재정렬
+- 다중 쿼리 검색 후보 생성
+- 결론 후보, 최신성, 히스토리, 리스크 중심 검색 보고서 출력
+- 웹 기반 질문/답변 및 히스토리 저장
