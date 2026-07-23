@@ -190,6 +190,11 @@ def read_page_stats_with_retry(max_attempts: int = 4) -> dict[str, object]:
         fallback = dict(LAST_STATS)
     fallback["ingest"] = dict(INGEST_STATE)
     fallback["stale"] = True
+    fallback["database"] = "unavailable"
+    fallback["persistence"] = {
+        "uses_persistent_database": False,
+        "warning": f"DB 연결 실패: {last_error}",
+    }
     fallback["warning"] = f"통계 조회 재시도 후 마지막 정상 값을 표시합니다: {last_error}"
     return fallback
 
@@ -337,7 +342,10 @@ def serialize_hits(hits, question: str = "") -> list[dict[str, object]]:
 
 @app.get("/")
 def index():
-    init_history_table()
+    try:
+        init_history_table()
+    except Exception:
+        logger.exception("Initial DB setup failed")
     return render_template("index.html")
 
 
@@ -358,8 +366,12 @@ def stats():
 
 @app.get("/api/history")
 def history():
-    init_history_table()
-    conn = connect_db()
+    try:
+        init_history_table()
+        conn = connect_db()
+    except Exception as error:
+        logger.exception("History load failed")
+        return jsonify([])
     try:
         rows = conn.execute(
             """
@@ -555,9 +567,24 @@ def admin_config():
         space_weights = {}
         document_type_weights = {}
     database_url = os.getenv("DATABASE_URL", "")
+    database_connection_error = None
+    database_connection_ok = False
+    if database_url:
+        conn = None
+        try:
+            conn = connect_db()
+            database_connection_ok = True
+        except Exception as error:
+            logger.exception("Admin config DB connection check failed")
+            database_connection_error = str(error)
+        finally:
+            if conn is not None:
+                conn.close()
     return jsonify(
         {
             "admin_token_required": bool(os.getenv("ADMIN_TOKEN", "")),
+            "database_connection_error": database_connection_error,
+            "database_connection_ok": database_connection_ok,
             "database_url_set": bool(database_url),
             "database_url_is_postgres": database_url.startswith(("postgres://", "postgresql://")),
             "document_type_weights": document_type_weights,

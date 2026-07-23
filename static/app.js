@@ -339,6 +339,11 @@ function renderAdminTokenStatus(config) {
     renderOpsStatus(`관리자 설정 일부 오류 · ${config.error}`);
     return;
   }
+  if (config?.database_connection_error) {
+    adminTokenStatus.textContent = "DB 연결 실패";
+    renderOpsStatus(`DB 연결 실패 · ${config.database_connection_error}`);
+    return;
+  }
   if (!required) {
     adminTokenStatus.textContent = config?.database_url_is_postgres === false
       ? "관리자 토큰 없음 · 임시 DB"
