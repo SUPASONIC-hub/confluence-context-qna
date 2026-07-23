@@ -1246,34 +1246,37 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
     if not terms:
         return []
 
+    uses_postgres = getattr(conn, "is_postgres", False)
     rows_by_id: dict[tuple[str, int], sqlite3.Row] = {}
     like_clauses = []
     params = []
+    candidate_limit = 8 if uses_postgres else 18
     candidate_terms = [
         term
         for term in ordered_unique([*essentials, *terms, *question_tokens(query)])
         if len(term) >= 2
-    ][:18]
-    max_candidates = max(limit * 16, 48)
+    ][:candidate_limit]
+    max_candidates = max(limit * (8 if uses_postgres else 16), 32 if uses_postgres else 48)
     for term in candidate_terms:
         like_clauses.append("(LOWER(title) LIKE ? OR LOWER(text) LIKE ?)")
         like = f"%{term}%"
         params.extend([like, like])
 
     if like_clauses:
+        order_clause = "" if uses_postgres else "ORDER BY last_updated DESC"
         like_rows = conn.execute(
             f"""
             SELECT page_id, chunk_index, title, text, created_at, last_updated, author, space, url
             FROM page_chunks
             WHERE {" OR ".join(like_clauses)}
-            ORDER BY last_updated DESC
+            {order_clause}
             LIMIT ?
             """,
             [*params, max_candidates],
         ).fetchall()
         rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in like_rows})
 
-    if not getattr(conn, "is_postgres", False):
+    if not uses_postgres:
         try:
             fts_rows = conn.execute(
                 """
@@ -1363,7 +1366,11 @@ def merged_hits(conn: sqlite3.Connection, question: str, mode: str = "balanced")
     mode = mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced"
     by_id: dict[tuple[str, int], SearchHit] = {}
     per_query_limit = 10 if mode == "broad" else 7 if mode == "recent" else 6
-    for query in derive_queries(question, mode):
+    queries = derive_queries(question, mode)
+    if getattr(conn, "is_postgres", False):
+        queries = queries[:3] if mode == "broad" else queries[:2]
+        per_query_limit = min(per_query_limit, 6)
+    for query in queries:
         for hit in search(conn, query, limit=per_query_limit):
             key = (hit.page_id, hit.chunk_index)
             existing = by_id.get(key)
