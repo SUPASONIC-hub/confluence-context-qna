@@ -41,6 +41,8 @@ jobs:
           }
 
           last_error = None
+          total_processed = 0
+          last_remaining = None
           def get_json(path):
               request = urllib.request.Request(f"{service_url}{path}", method="GET")
               with urllib.request.urlopen(request, timeout=30) as response:
@@ -64,9 +66,19 @@ jobs:
                               f"status={payload.get('status')} processed={payload.get('processed')} "
                               f"remaining={payload.get('progress', {}).get('remaining')}"
                           )
+                          processed = int(payload.get("processed") or 0)
+                          total_processed += processed
+                          last_remaining = payload.get("progress", {}).get("remaining")
                           stats = get_json("/api/stats")
                           print(f"page_count={stats.get('page_count')} stale={stats.get('stale')}")
                           if payload.get("status") == "completed":
+                              sys.exit(0)
+                          if processed > 0:
+                              print(
+                                  "Batch made progress. The next scheduled run will continue "
+                                  f"from saved progress. total_processed={total_processed} "
+                                  f"remaining_spaces={last_remaining}"
+                              )
                               sys.exit(0)
                           break
                   except urllib.error.HTTPError as error:
@@ -81,6 +93,10 @@ jobs:
                   time.sleep(10 * attempt)
               time.sleep(5)
 
-          print(f"Ingest did not complete in this workflow run. Last error: {last_error}")
+          print(
+              "::error::Ingest made no progress in this workflow run. "
+              f"total_processed={total_processed} remaining_spaces={last_remaining} "
+              f"last_error={last_error}"
+          )
           sys.exit(1)
           PY
