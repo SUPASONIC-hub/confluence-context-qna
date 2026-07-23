@@ -17,7 +17,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${SERVICE_URL:-}" ]; then
-            echo "SERVICE_URL secret is required"
+            echo "::error::SERVICE_URL secret is required. Set it to your Render service URL, for example https://YOUR-SERVICE.onrender.com"
             exit 1
           fi
           python - <<'PY'
@@ -30,15 +30,13 @@ jobs:
 
           service_url = os.environ["SERVICE_URL"].rstrip("/")
           admin_token = os.environ.get("ADMIN_TOKEN", "")
-          if not admin_token:
-              print("ADMIN_TOKEN secret is empty. Set it to the same value as Render ADMIN_TOKEN.")
-              sys.exit(1)
 
           url = f"{service_url}/api/ingest/batch"
           headers = {
               "Content-Type": "application/json",
-              "X-Admin-Token": admin_token,
           }
+          if admin_token:
+              headers["X-Admin-Token"] = admin_token
 
           last_error = None
           total_processed = 0
@@ -50,6 +48,12 @@ jobs:
 
           config = get_json("/api/admin/config")
           print(f"admin_token_required={config.get('admin_token_required')}")
+          if config.get("admin_token_required") and not admin_token:
+              print(
+                  "::error::Render requires ADMIN_TOKEN, but GitHub secret ADMIN_TOKEN is empty. "
+                  "Set the GitHub repository secret to the same value as Render ADMIN_TOKEN."
+              )
+              sys.exit(1)
           stats = get_json("/api/stats")
           print(f"before page_count={stats.get('page_count')} latest={stats.get('latest_updated')}")
 
