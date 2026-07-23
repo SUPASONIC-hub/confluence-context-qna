@@ -1073,7 +1073,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
     return sorted(hits, key=lambda hit: (hit.score, hit.last_updated), reverse=True)[:limit]
 
 
-def derive_queries(question: str) -> list[str]:
+def derive_queries(question: str, mode: str = "balanced") -> list[str]:
     base = question.strip()
     essentials = " ".join(essential_terms(question))
     prefixes = [
@@ -1082,18 +1082,85 @@ def derive_queries(question: str) -> list[str]:
         f"{essentials} 의사결정 회의록 배경",
         f"{essentials} 리스크 상충 예외",
     ]
+    if mode == "strict":
+        prefixes = [
+            f"{essentials} 정확한 기준 최종 확정",
+            f"{essentials} 정책 매뉴얼 적용 범위",
+        ]
+    elif mode == "broad":
+        prefixes.extend(
+            [
+                f"{base} 관련 참고",
+                f"{base} 예외 변경 이력",
+                f"{base} 운영 가이드",
+            ]
+        )
+    elif mode == "recent":
+        prefixes.insert(0, f"{essentials} 최신 변경 최근 업데이트")
     return ordered_unique([base, *prefixes])
 
 
-def merged_hits(conn: sqlite3.Connection, question: str) -> list[SearchHit]:
+def diversify_hits(hits: list[SearchHit], limit: int = 18, per_page_limit: int = 2) -> list[SearchHit]:
+    selected = []
+    page_counts: dict[str, int] = {}
+    for hit in hits:
+        if page_counts.get(hit.page_id, 0) >= per_page_limit:
+            continue
+        selected.append(hit)
+        page_counts[hit.page_id] = page_counts.get(hit.page_id, 0) + 1
+        if len(selected) >= limit:
+            break
+    if len(selected) < min(limit, len(hits)):
+        selected_ids = {(hit.page_id, hit.chunk_index) for hit in selected}
+        for hit in hits:
+            key = (hit.page_id, hit.chunk_index)
+            if key in selected_ids:
+                continue
+            selected.append(hit)
+            if len(selected) >= limit:
+                break
+    return selected
+
+
+def mode_rank_key(hit: SearchHit, mode: str) -> tuple[float, str]:
+    if mode == "recent":
+        return (recency_boost(hit.last_updated) * 6 + hit.score, hit.last_updated)
+    if mode == "strict":
+        return (hit.score + len(hit.matched_terms) * 1.5, hit.last_updated)
+    if mode == "broad":
+        return (hit.score - max(hit.score - 30, 0) * 0.25, hit.last_updated)
+    return (hit.score, hit.last_updated)
+
+
+def merged_hits(conn: sqlite3.Connection, question: str, mode: str = "balanced") -> list[SearchHit]:
+    mode = mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced"
     by_id: dict[tuple[str, int], SearchHit] = {}
-    for query in derive_queries(question):
-        for hit in search(conn, query, limit=6):
+    per_query_limit = 10 if mode == "broad" else 7 if mode == "recent" else 6
+    for query in derive_queries(question, mode):
+        for hit in search(conn, query, limit=per_query_limit):
             key = (hit.page_id, hit.chunk_index)
             existing = by_id.get(key)
             if existing is None or hit.score > existing.score:
                 by_id[key] = hit
-    return sorted(by_id.values(), key=lambda hit: (hit.score, hit.last_updated), reverse=True)[:18]
+    ranked = sorted(by_id.values(), key=lambda hit: mode_rank_key(hit, mode), reverse=True)
+    return diversify_hits(ranked, per_page_limit=3 if mode == "strict" else 2)
+
+
+def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") -> dict[str, object]:
+    page_hits = unique_page_hits(hits)
+    return {
+        "mode": mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced",
+        "confidence": confidence_label(page_hits),
+        "keywords": essential_terms(question)[:10] or extract_terms(question)[:10],
+        "preferred_doc_types": sorted(question_intents(question)),
+        "page_count": len(page_hits),
+        "chunk_count": len(hits),
+        "top_score": round(page_hits[0].score, 2) if page_hits else 0,
+        "doc_type_counts": {
+            doc_type: sum(1 for hit in page_hits if hit.document_type == doc_type)
+            for doc_type in sorted({hit.document_type for hit in page_hits})
+        },
+    }
 
 
 def excerpt(text: str, size: int = 700) -> str:

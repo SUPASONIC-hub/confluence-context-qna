@@ -10,7 +10,16 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
-from confluence_qna import connect_db, generate_answer, ingest, ingest_batch, ingest_progress_status, load_config, merged_hits
+from confluence_qna import (
+    connect_db,
+    generate_answer,
+    ingest,
+    ingest_batch,
+    ingest_progress_status,
+    load_config,
+    merged_hits,
+    search_meta,
+)
 
 
 app = Flask(__name__)
@@ -340,14 +349,16 @@ def ask_api():
     init_history_table()
     payload = request.get_json(silent=True) or {}
     question = str(payload.get("question", "")).strip()
+    search_mode = str(payload.get("search_mode", "balanced")).strip() or "balanced"
     if not question:
         return jsonify({"error": "question is required"}), 400
 
     conn = connect_db()
     try:
-        hits = merged_hits(conn, question)
+        hits = merged_hits(conn, question, search_mode)
         answer, answer_mode = generate_answer(question, hits)
         serialized = serialize_hits(hits)
+        meta = search_meta(question, hits, search_mode)
         created_at = datetime.now(timezone.utc).isoformat()
         if getattr(conn, "is_postgres", False):
             cursor = conn.execute(
@@ -377,6 +388,7 @@ def ask_api():
                 "hits": serialized,
                 "hit_count": len(hits),
                 "answer_mode": answer_mode,
+                "search_meta": meta,
                 "created_at": created_at,
             }
         )

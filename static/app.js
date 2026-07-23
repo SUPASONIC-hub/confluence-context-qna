@@ -6,7 +6,9 @@ const askButton = document.querySelector("#askButton");
 const answerOutput = document.querySelector("#answerOutput");
 const sourceList = document.querySelector("#sourceList");
 const sourceCount = document.querySelector("#sourceCount");
+const sourceSort = document.querySelector("#sourceSort");
 const resultMeta = document.querySelector("#resultMeta");
+const answerToc = document.querySelector("#answerToc");
 const stats = document.querySelector("#stats");
 const sourceFilters = document.querySelector("#sourceFilters");
 const quickPrompts = document.querySelector("#quickPrompts");
@@ -25,6 +27,7 @@ const BATCH_SIZE = 80;
 let activeHistoryId = null;
 let currentHits = [];
 let activeSourceType = "전체";
+let activeSourceSort = "score";
 let adminToken = localStorage.getItem("adminToken") || "";
 let batchRunning = false;
 let stopBatchRequested = false;
@@ -80,13 +83,15 @@ function renderAnswerMarkdown(value) {
         html.push("</ul>");
         listOpen = false;
       }
-      html.push(`<h4>${inlineFormat(line.slice(3))}</h4>`);
+      const title = line.slice(3);
+      html.push(`<h4 id="${sectionId(title)}">${inlineFormat(title)}</h4>`);
     } else if (line.startsWith("# ")) {
       if (listOpen) {
         html.push("</ul>");
         listOpen = false;
       }
-      html.push(`<h3>${inlineFormat(line.slice(2))}</h3>`);
+      const title = line.slice(2);
+      html.push(`<h3 id="${sectionId(title)}">${inlineFormat(title)}</h3>`);
     } else if (line.startsWith("- ")) {
       if (!listOpen) {
         html.push("<ul>");
@@ -103,6 +108,18 @@ function renderAnswerMarkdown(value) {
   }
   if (listOpen) html.push("</ul>");
   return html.join("");
+}
+
+function answerSections(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("## "))
+    .map((line) => line.slice(3))
+    .slice(0, 8);
+}
+
+function sectionId(title) {
+  return `section-${String(title).replace(/[^0-9A-Za-z가-힣]+/g, "-").replace(/^-|-$/g, "").slice(0, 48)}`;
 }
 
 async function fetchJson(url, options) {
@@ -214,10 +231,22 @@ function renderSourceFilters(hits) {
   `).join("");
 }
 
+function sortedHits(hits) {
+  const result = [...hits];
+  if (activeSourceSort === "recent") {
+    return result.sort((a, b) => String(b.last_updated || "").localeCompare(String(a.last_updated || "")));
+  }
+  if (activeSourceSort === "type") {
+    return result.sort((a, b) => String(a.document_type || "").localeCompare(String(b.document_type || "")) || b.score - a.score);
+  }
+  return result.sort((a, b) => b.score - a.score);
+}
+
 function renderSources(hits = currentHits) {
-  const visibleHits = activeSourceType === "전체"
+  const filteredHits = activeSourceType === "전체"
     ? hits
     : hits.filter((hit) => (hit.document_type || "일반문서") === activeSourceType);
+  const visibleHits = sortedHits(filteredHits);
   renderSourceFilters(hits);
   sourceCount.textContent = `${visibleHits.length}개`;
   if (!visibleHits.length) {
@@ -259,10 +288,30 @@ function renderResult(payload) {
   currentHits = payload.hits || [];
   activeSourceType = "전체";
   answerOutput.innerHTML = renderAnswerMarkdown(payload.answer);
+  renderAnswerToc(payload.answer);
   const mode = payload.answer_mode ? ` · ${payload.answer_mode}` : "";
   const pages = new Set(currentHits.map((hit) => hit.page_id)).size;
-  resultMeta.textContent = `${formatDate(payload.created_at)} · 문서 ${pages}개 · 근거 ${payload.hit_count}개${mode}`;
+  const meta = payload.search_meta || {};
+  const confidence = meta.confidence ? ` · 신뢰도 ${meta.confidence}` : "";
+  const searchMode = meta.mode ? ` · ${modeLabel(meta.mode)}` : "";
+  resultMeta.textContent = `${formatDate(payload.created_at)} · 문서 ${pages}개 · 근거 ${payload.hit_count}개${confidence}${searchMode}${mode}`;
   renderSources(currentHits);
+}
+
+function renderAnswerToc(answer) {
+  if (!answerToc) return;
+  const sections = answerSections(answer);
+  if (!sections.length) {
+    answerToc.innerHTML = "";
+    return;
+  }
+  answerToc.innerHTML = sections.map((section) => (
+    `<button type="button" data-target="${sectionId(section)}">${escapeText(section.replace(/^\d+\.\s*/, ""))}</button>`
+  )).join("");
+}
+
+function modeLabel(mode) {
+  return { balanced: "균형", strict: "정밀", broad: "넓게", recent: "최신" }[mode] || mode;
 }
 
 async function loadStats() {
@@ -292,7 +341,7 @@ askForm.addEventListener("submit", async (event) => {
     const payload = await fetchJson("/api/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, search_mode: selectedSearchMode() }),
     });
     renderResult(payload);
     questionInput.value = "";
@@ -305,6 +354,18 @@ askForm.addEventListener("submit", async (event) => {
     askButton.textContent = "질문하기";
   }
 });
+
+function selectedSearchMode() {
+  return document.querySelector("input[name='searchMode']:checked")?.value || "balanced";
+}
+
+if (answerToc) {
+  answerToc.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-target]");
+    if (!button) return;
+    document.getElementById(button.dataset.target)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  });
+}
 
 questionInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -338,6 +399,13 @@ sourceFilters.addEventListener("click", (event) => {
   activeSourceType = button.dataset.type;
   renderSources(currentHits);
 });
+
+if (sourceSort) {
+  sourceSort.addEventListener("change", () => {
+    activeSourceSort = sourceSort.value;
+    renderSources(currentHits);
+  });
+}
 
 saveTokenButton.addEventListener("click", () => {
   adminToken = adminTokenInput.value.trim();

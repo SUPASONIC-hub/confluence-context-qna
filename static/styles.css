@@ -314,6 +314,31 @@ textarea {
   min-width: 0;
 }
 
+.search-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.search-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+  color: var(--blue-deep);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.search-controls input {
+  accent-color: var(--blue-deep);
+}
+
 .quick-prompts {
   display: flex;
   gap: 8px;
@@ -406,6 +431,53 @@ button[type="submit"]:disabled {
 .panel-title span {
   color: var(--muted);
   font-size: 13px;
+}
+
+.source-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.source-sort select {
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--blue-deep);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.answer-toc {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 12px 18px 0;
+  background: var(--paper);
+}
+
+.answer-toc:empty {
+  display: none;
+}
+
+.answer-toc button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+  color: var(--blue-deep);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.answer-toc button:hover {
+  border-color: var(--blue-strong);
+  background: #eef9fc;
 }
 
 .answer-output {
@@ -666,6 +738,11 @@ mark {
   .form-actions {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .source-sort {
+    width: 100%;
+    justify-content: space-between;
   }
 
   button[type="submit"] {

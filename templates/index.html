@@ -60,6 +60,12 @@
           </div>
           <form id="askForm" class="ask-form">
             <textarea id="questionInput" rows="3" placeholder="예: 현재 환불 정책 프로세스가 정상인가요?"></textarea>
+            <div class="search-controls" aria-label="검색 모드">
+              <label><input type="radio" name="searchMode" value="balanced" checked /> 균형</label>
+              <label><input type="radio" name="searchMode" value="strict" /> 정밀</label>
+              <label><input type="radio" name="searchMode" value="broad" /> 넓게</label>
+              <label><input type="radio" name="searchMode" value="recent" /> 최신</label>
+            </div>
             <div class="quick-prompts" id="quickPrompts">
               <button type="button" data-question="현재 최신 정책 기준으로 정상 운영 중인지 확인해줘">정상 여부</button>
               <button type="button" data-question="이 주제의 최종 결정사항과 근거 문서를 찾아줘">최종 결정</button>
@@ -78,13 +84,21 @@
               <h3>답변 결과</h3>
               <span id="resultMeta">대기 중</span>
             </div>
+            <div id="answerToc" class="answer-toc"></div>
             <div id="answerOutput" class="answer-output">왼쪽 히스토리를 선택하거나 새 질문을 입력하세요.</div>
           </article>
 
           <aside class="source-panel">
             <div class="panel-title">
               <h3>근거 문서</h3>
-              <span id="sourceCount">0개</span>
+              <label class="source-sort">
+                <span id="sourceCount">0개</span>
+                <select id="sourceSort" aria-label="근거 정렬">
+                  <option value="score">관련도</option>
+                  <option value="recent">최신순</option>
+                  <option value="type">문서유형</option>
+                </select>
+              </label>
             </div>
             <div id="sourceFilters" class="source-filters"></div>
             <div id="sourceList" class="source-list"></div>
@@ -93,6 +107,6 @@
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js', v='20260723-3') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260723-4') }}"></script>
   </body>
 </html>
