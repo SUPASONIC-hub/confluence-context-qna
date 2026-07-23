@@ -33,6 +33,26 @@ textarea {
   font: inherit;
 }
 
+button,
+a,
+label,
+select,
+.export-link,
+.source-filters span,
+.term-chips span,
+.search-meta-keywords span {
+  word-break: keep-all;
+}
+
+button,
+.export-link,
+.source-filters button,
+.term-chips span,
+.search-meta-keywords span,
+.source-card-head span {
+  white-space: nowrap;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
@@ -75,14 +95,20 @@ textarea {
 }
 
 .brand h1 {
+  overflow: hidden;
   font-size: 18px;
   line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .brand p {
   margin-top: 2px;
+  overflow: hidden;
   color: var(--muted);
   font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stats {
@@ -157,12 +183,15 @@ textarea {
 .backup-actions button,
 .export-link {
   display: grid;
+  min-width: 0;
   min-height: 36px;
   place-items: center;
   border: 1px solid var(--line);
   border-radius: 8px;
+  padding: 0 10px;
   background: #fff;
   color: var(--blue-deep);
+  font-size: 12px;
   font-weight: 800;
   text-decoration: none;
   cursor: pointer;
@@ -220,7 +249,10 @@ textarea {
 }
 
 .history-head h2 {
+  overflow: hidden;
   font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .history-head button {
@@ -341,6 +373,7 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
   min-height: 32px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -442,7 +475,10 @@ button[type="submit"]:disabled {
 }
 
 .panel-title h3 {
+  overflow: hidden;
   font-size: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .panel-title span {
@@ -458,7 +494,16 @@ button[type="submit"]:disabled {
   min-width: 0;
 }
 
+.result-actions span {
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .result-actions button {
+  flex: 0 0 auto;
   min-height: 30px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -479,9 +524,11 @@ button[type="submit"]:disabled {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .source-sort select {
+  flex: 0 0 auto;
   height: 30px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -490,6 +537,12 @@ button[type="submit"]:disabled {
   font: inherit;
   font-size: 12px;
   font-weight: 800;
+}
+
+.source-sort span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .answer-toc {
@@ -616,14 +669,19 @@ button[type="submit"]:disabled {
 }
 
 .inline-evidence-head h4 {
+  overflow: hidden;
   margin: 0;
   color: var(--blue-deep);
   font-size: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .inline-evidence-head span {
+  flex: 0 0 auto;
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .answer-output a {
@@ -729,10 +787,12 @@ button[type="submit"]:disabled {
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+  min-width: 0;
 }
 
 .source-card-head a {
   display: block;
+  min-width: 0;
   color: var(--blue-deep);
   font-weight: 800;
   line-height: 1.35;
@@ -880,7 +940,7 @@ mark {
   }
 
   .query-panel h2 {
-    font-size: 18px;
+    font-size: 17px;
   }
 
   .answer-panel,
@@ -914,6 +974,11 @@ mark {
   .result-actions {
     width: 100%;
     justify-content: space-between;
+  }
+
+  .result-actions span {
+    max-width: 100%;
+    text-align: left;
   }
 
   .inline-evidence-head {
