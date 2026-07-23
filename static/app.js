@@ -487,6 +487,7 @@ function renderSearchMeta(meta) {
   searchMetaPanel.innerHTML = `
     <div><strong>${escapeText(meta.confidence || "-")}</strong><span>신뢰도</span></div>
     <div><strong>${escapeText(modeLabel(meta.mode || "balanced"))}</strong><span>검색 모드</span></div>
+    <div><strong>${escapeText(rankerLabel(meta.ranker || "keyword"))}</strong><span>랭킹 방식</span></div>
     <div><strong>${escapeText(String(meta.top_score ?? 0))}</strong><span>top score</span></div>
     <div><strong>${escapeText(coverageLabel)}</strong><span>핵심어 매칭</span></div>
     <div><strong>${escapeText(String(meta.official_count ?? 0))}</strong><span>공식 근거</span></div>
@@ -554,6 +555,10 @@ function renderAnswerToc(answer) {
 
 function modeLabel(mode) {
   return { balanced: "균형", strict: "정밀", broad: "넓게", recent: "최신" }[mode] || mode;
+}
+
+function rankerLabel(ranker) {
+  return { contextual: "문맥", keyword: "키워드" }[ranker] || ranker;
 }
 
 async function loadStats() {

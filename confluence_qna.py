@@ -924,6 +924,107 @@ def question_tokens(text: str) -> list[str]:
     )
 
 
+def semantic_tokens(text: str) -> list[str]:
+    base_tokens = question_tokens(text)
+    grams: list[str] = []
+    for token in base_tokens:
+        if re.search(r"[가-힣]", token) and len(token) >= 4:
+            grams.extend(token[index : index + 2] for index in range(len(token) - 1))
+            grams.extend(token[index : index + 3] for index in range(len(token) - 2))
+    return ordered_unique([*base_tokens, *grams])
+
+
+def sentence_units(text: str) -> list[str]:
+    compact = " ".join(str(text or "").split())
+    return [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?。！？])\s+|(?<=다\.)\s+|(?<=요\.)\s+", compact)
+        if sentence.strip()
+    ]
+
+
+def weighted_token_overlap(query_tokens: list[str], doc_tokens: list[str]) -> float:
+    if not query_tokens or not doc_tokens:
+        return 0.0
+    doc_counts: dict[str, int] = {}
+    for token in doc_tokens:
+        doc_counts[token] = doc_counts.get(token, 0) + 1
+    score = 0.0
+    for token in query_tokens:
+        if token not in doc_counts:
+            continue
+        length_weight = 1.0 + min(len(token), 8) / 8
+        rarity_weight = 1.0 / (1.0 + min(doc_counts[token] - 1, 6) * 0.18)
+        score += length_weight * rarity_weight
+    return score / max(len(query_tokens), 1)
+
+
+def best_sentence_overlap(question: str, text: str) -> float:
+    query_tokens = semantic_tokens(question)
+    best = 0.0
+    for sentence in sentence_units(text)[:80]:
+        score = weighted_token_overlap(query_tokens, semantic_tokens(sentence))
+        if score > best:
+            best = score
+    return best
+
+
+def context_score(
+    row: sqlite3.Row,
+    query: str,
+    terms: list[str],
+    essentials: list[str],
+    preferred_doc_types: set[str],
+    config: Config,
+) -> tuple[float, list[str]]:
+    title = compact_text(row["title"])
+    text = compact_text(row["text"])
+    document_type = classify_document(row["title"], row["text"])
+    query_semantic = semantic_tokens(query)
+    title_semantic = semantic_tokens(row["title"])
+    text_semantic = semantic_tokens(row["text"])
+    matched = ordered_unique(
+        token
+        for token in terms
+        if token and (token in title or token in text)
+    )
+    semantic_overlap = weighted_token_overlap(query_semantic, text_semantic)
+    title_overlap = weighted_token_overlap(query_semantic, title_semantic)
+    sentence_overlap = best_sentence_overlap(query, row["text"])
+    score = recency_boost(row["last_updated"])
+    score += semantic_overlap * 30.0
+    score += title_overlap * 24.0
+    score += sentence_overlap * 28.0
+    score += proximity_bonus(title, essentials) * 1.8
+    score += proximity_bonus(text, essentials) * 1.2
+    matched_essentials = [term for term in essentials if term in title or term in text]
+    if essentials:
+        essential_ratio = len(matched_essentials) / max(len(essentials[:8]), 1)
+        score += essential_ratio * 18.0
+        if not matched_essentials and semantic_overlap < 0.18:
+            score -= 18.0
+    if document_type in preferred_doc_types:
+        score += 7.0
+    elif preferred_doc_types and document_type == "일반문서":
+        score -= 3.0
+    if document_type in {"정책", "매뉴얼", "결정사항"}:
+        score += 2.5
+    if row["space"] in config.official_spaces:
+        score += 4.0
+    score += config.space_weights.get(row["space"], 0.0)
+    score += config.document_type_weights.get(document_type, 0.0)
+    for phrase in phrase_candidates(query)[:10]:
+        if phrase in title:
+            score += 8.0
+            matched.append(phrase)
+        elif phrase in text:
+            score += 3.0
+            matched.append(phrase)
+    if semantic_overlap < 0.08 and title_overlap < 0.08:
+        score -= 12.0
+    return score, ordered_unique([*matched, *matched_essentials])[:16]
+
+
 def classify_document(title: str, text: str) -> str:
     haystack = f"{title} {text[:2500]}".lower()
     scores: dict[str, int] = {}
@@ -1094,7 +1195,8 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
     rows_by_id: dict[tuple[str, int], sqlite3.Row] = {}
     like_clauses = []
     params = []
-    for term in terms[:16]:
+    candidate_terms = ordered_unique([*essentials, *terms, *semantic_tokens(query)])[:24]
+    for term in candidate_terms:
         like_clauses.append("(LOWER(title) LIKE ? OR LOWER(text) LIKE ?)")
         like = f"%{term}%"
         params.extend([like, like])
@@ -1128,8 +1230,11 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
 
     hits = []
     for row in rows_by_id.values():
-        score, matched = term_score(row, query, terms, essentials, preferred_doc_types, config)
-        if matched and score > -999:
+        keyword_score, keyword_matched = term_score(row, query, terms, essentials, preferred_doc_types, config)
+        semantic_score, semantic_matched = context_score(row, query, terms, essentials, preferred_doc_types, config)
+        score = semantic_score + max(keyword_score, -30.0) * 0.35
+        matched = ordered_unique([*semantic_matched, *keyword_matched])
+        if matched and score > -20:
             hits.append(row_to_hit(row, score, matched))
     return sorted(hits, key=lambda hit: (hit.score, hit.last_updated), reverse=True)[:limit]
 
@@ -1231,6 +1336,7 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
         "stale_count": stale_count,
         "coverage_ratio": coverage_ratio,
         "latest_updated": max((hit.last_updated for hit in page_hits), default=""),
+        "ranker": "contextual",
         "quality_notes": search_quality_notes(page_hits, official_count, stale_count, coverage_ratio),
         "doc_type_counts": {
             doc_type: sum(1 for hit in page_hits if hit.document_type == doc_type)
