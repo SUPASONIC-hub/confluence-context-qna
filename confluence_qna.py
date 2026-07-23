@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 try:
     import psycopg
     from psycopg.rows import dict_row
-except ImportError:
+except Exception:
     psycopg = None
     dict_row = None
 

@@ -591,6 +591,7 @@ def admin_config():
             "document_type_weights": document_type_weights,
             "error": config_error,
             "official_spaces": official_spaces,
+            "render_git_commit": os.getenv("RENDER_GIT_COMMIT", ""),
             "space_weights": space_weights,
         }
     )
