@@ -350,6 +350,22 @@ function renderOpsStatus(message) {
   opsStatus.textContent = `${formatTime()} · ${message}`;
 }
 
+function isTransientGatewayError(error) {
+  return Boolean(error?.retryable) || /요청 실패: 50[234]/.test(String(error?.message || ""));
+}
+
+async function refreshAfterAnswer() {
+  const results = await Promise.allSettled([loadHistory(), loadStats()]);
+  const failed = results.find((result) => result.status === "rejected");
+  if (!failed) return;
+  const message = failed.reason?.message || String(failed.reason || "");
+  renderOpsStatus(
+    isTransientGatewayError(failed.reason)
+      ? "답변 완료 · 서버 재시작 중이라 목록 갱신은 다음 주기에 다시 시도합니다."
+      : `답변 완료 · 후속 갱신 실패: ${message}`
+  );
+}
+
 function renderAdminTokenStatus(config) {
   if (!adminTokenStatus) return;
   const required = Boolean(config?.admin_token_required);
@@ -807,7 +823,7 @@ askForm.addEventListener("submit", async (event) => {
     renderResult(payload);
     saveLocalHistoryPayload(payload).catch(() => {});
     questionInput.value = "";
-    await Promise.all([loadHistory(), loadStats()]);
+    await refreshAfterAnswer();
   } catch (error) {
     answerOutput.textContent = error.message;
     resultMeta.textContent = "오류";
@@ -1155,10 +1171,18 @@ if (adminTokenInput) {
 }
 
 Promise.all([loadStats(), loadHistory(), loadAdminConfig()]).catch((error) => {
+  if (isTransientGatewayError(error)) {
+    renderOpsStatus("서버 재시작 중입니다. 잠시 후 자동으로 다시 갱신합니다.");
+    return;
+  }
   answerOutput.textContent = error.message;
   resultMeta.textContent = "초기화 오류";
 });
 
 setInterval(() => {
-  loadStats().catch((error) => renderOpsStatus(error.message));
+  loadStats().catch((error) => {
+    if (!isTransientGatewayError(error)) {
+      renderOpsStatus(error.message);
+    }
+  });
 }, 15000);
