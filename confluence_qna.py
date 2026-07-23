@@ -121,7 +121,7 @@ def require_confluence_config(config: Config) -> None:
         if not value
     ]
     if missing:
-        raise SystemExit(f".env에 필수 값이 없습니다: {', '.join(missing)}")
+        raise RuntimeError(f".env에 필수 값이 없습니다: {', '.join(missing)}")
 
 
 def explain_http_error(error: HTTPError) -> str:
@@ -361,7 +361,7 @@ def confluence_get(config: Config, path: str, params: dict[str, object]) -> dict
     try:
         response.raise_for_status()
     except HTTPError as error:
-        raise SystemExit(explain_http_error(error)) from error
+        raise RuntimeError(explain_http_error(error)) from error
     return response.json()
 
 
@@ -559,6 +559,10 @@ def ingest_progress_status(conn) -> dict[str, object]:
         "spaces": spaces,
         "completed": bool(spaces) and all(space["completed"] for space in spaces),
         "remaining": sum(1 for space in spaces if not space["completed"]),
+        "completed_spaces": sum(1 for space in spaces if space["completed"]),
+        "total_spaces": len(spaces),
+        "indexed_offsets": sum(int(space["next_start"] or 0) for space in spaces),
+        "active_space": next((space["space"] for space in spaces if not space["completed"]), None),
     }
 
 
@@ -626,7 +630,7 @@ def ingest(args: argparse.Namespace) -> None:
         spaces = [space] if space else list(iter_spaces(config))
 
     if not spaces:
-        raise SystemExit("수집 가능한 Confluence 스페이스를 찾지 못했습니다.")
+        raise RuntimeError("수집 가능한 Confluence 스페이스를 찾지 못했습니다.")
 
     conn = connect_db()
     total_count = 0

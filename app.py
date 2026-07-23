@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -14,6 +15,7 @@ from confluence_qna import connect_db, generate_answer, ingest, ingest_batch, in
 
 app = Flask(__name__)
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+logger = logging.getLogger(__name__)
 INGEST_LOCK = threading.Lock()
 INGEST_STATE = {
     "running": False,
@@ -54,6 +56,7 @@ def not_found(error):
 @app.errorhandler(500)
 def internal_error(error):
     if request.path.startswith("/api/"):
+        logger.exception("Unhandled API error on %s", request.path)
         return jsonify({"error": "Internal server error"}), 500
     return error
 
@@ -120,13 +123,15 @@ def page_stats(conn: sqlite3.Connection) -> dict[str, object]:
     ).fetchall()
     latest = conn.execute("SELECT MAX(last_updated) AS latest FROM pages").fetchone()["latest"]
     history_count = conn.execute("SELECT COUNT(*) AS count FROM query_history").fetchone()["count"]
+    ingest_state = dict(INGEST_STATE)
+    ingest_state["progress"] = ingest_progress_status(conn)
     return {
         "page_count": page_count,
         "spaces": [{"space": row["space"], "count": row["count"]} for row in space_rows],
         "latest_updated": latest,
         "history_count": history_count,
         "answer_mode": "검색 보고서",
-        "ingest": INGEST_STATE,
+        "ingest": ingest_state,
         "weights": {
             "official_spaces": list(config.official_spaces),
             "space_weights": config.space_weights,
@@ -164,6 +169,11 @@ def read_page_stats_with_retry(max_attempts: int = 4) -> dict[str, object]:
     fallback["stale"] = True
     fallback["warning"] = f"통계 조회 재시도 후 마지막 정상 값을 표시합니다: {last_error}"
     return fallback
+
+
+def error_payload(error: Exception) -> dict[str, str]:
+    message = str(error).strip() or error.__class__.__name__
+    return {"error": message[:1200]}
 
 
 def run_ingest_job(limit: int | None) -> None:
@@ -401,7 +411,11 @@ def ingest_batch_api():
     batch_size = int(payload.get("batch_size") or 80)
     reset = bool(payload.get("reset"))
     batch_size = max(1, min(batch_size, 80))
-    result = ingest_batch(batch_size=batch_size, reset=reset)
+    try:
+        result = ingest_batch(batch_size=batch_size, reset=reset)
+    except Exception as error:
+        logger.exception("Batch ingest failed")
+        return jsonify(error_payload(error)), 502
     return jsonify(result)
 
 

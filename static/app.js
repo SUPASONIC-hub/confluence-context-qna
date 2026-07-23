@@ -15,11 +15,16 @@ const runBatchButton = document.querySelector("#runBatchButton");
 const refreshStatsButton = document.querySelector("#refreshStats");
 const exportLink = document.querySelector("#exportLink");
 const opsStatus = document.querySelector("#opsStatus");
+const ingestProgressBar = document.querySelector("#ingestProgressBar");
+const ingestProgressDetail = document.querySelector("#ingestProgressDetail");
 
+const BATCH_SIZE = 80;
 let activeHistoryId = null;
 let currentHits = [];
 let activeSourceType = "전체";
 let adminToken = localStorage.getItem("adminToken") || "";
+let batchRunning = false;
+let stopBatchRequested = false;
 
 function apiUrl(path) {
   return new URL(path, window.location.origin).toString();
@@ -70,7 +75,10 @@ async function fetchJson(url, options) {
   }
   if (!response.ok) {
     const rawDetail = payload?.error || body.trim() || response.statusText;
-    const detail = String(rawDetail).replace(/\s+/g, " ").slice(0, 220);
+    let detail = String(rawDetail).replace(/\s+/g, " ").slice(0, 220);
+    if (response.status === 502 && body.trim().startsWith("<!DOCTYPE html>")) {
+      detail = "Render gateway error. 요청이 오래 걸렸거나 웹 프로세스가 재시작되었습니다. 배치 크기를 낮추고 잠시 후 다시 시도하세요.";
+    }
     throw new Error(`요청 실패: ${response.status} ${detail}`);
   }
   if (!payload) {
@@ -81,6 +89,21 @@ async function fetchJson(url, options) {
 
 function adminHeaders() {
   return adminToken ? { "X-Admin-Token": adminToken } : {};
+}
+
+function renderIngestProgress(progress) {
+  if (!ingestProgressBar || !ingestProgressDetail) return;
+  if (!progress || !progress.total_spaces) {
+    ingestProgressBar.style.width = "0%";
+    ingestProgressDetail.textContent = "진행 정보 없음";
+    return;
+  }
+  const total = Number(progress.total_spaces) || 0;
+  const completed = Number(progress.completed_spaces) || 0;
+  const percent = total ? Math.round((completed / total) * 100) : 0;
+  ingestProgressBar.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
+  const active = progress.active_space ? ` · 현재 ${progress.active_space}` : "";
+  ingestProgressDetail.textContent = `스페이스 ${completed}/${total} 완료 · 색인 위치 ${progress.indexed_offsets ?? 0}${active}`;
 }
 
 function renderStats(payload) {
@@ -95,6 +118,7 @@ function renderStats(payload) {
     <div><strong>${escapeText(latest)}</strong><span>최신</span></div>
     <div><strong>${payload.stale ? "캐시" : "실시간"}</strong><span>통계</span></div>
   `;
+  renderIngestProgress(ingest.progress);
 }
 
 function renderOpsStatus(message) {
@@ -229,20 +253,47 @@ saveTokenButton.addEventListener("click", () => {
 });
 
 runBatchButton.addEventListener("click", async () => {
+  if (batchRunning) {
+    stopBatchRequested = true;
+    renderOpsStatus("현재 배치가 끝나면 중지합니다.");
+    return;
+  }
+  batchRunning = true;
+  stopBatchRequested = false;
   runBatchButton.disabled = true;
+  runBatchButton.textContent = "중지 요청";
+  runBatchButton.disabled = false;
   renderOpsStatus("배치 수집 실행 중");
   try {
-    const payload = await fetchJson("/api/ingest/batch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...adminHeaders() },
-      body: JSON.stringify({ batch_size: 80 }),
-    });
-    renderOpsStatus(`수집 ${payload.status} · 처리 ${payload.processed}개 · 남은 스페이스 ${payload.progress?.remaining ?? "-"}`);
-    await loadStats();
+    let totalProcessed = 0;
+    for (let batch = 1; batch <= 30; batch += 1) {
+      if (stopBatchRequested) break;
+      const payload = await fetchJson("/api/ingest/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...adminHeaders() },
+        body: JSON.stringify({ batch_size: BATCH_SIZE }),
+      });
+      totalProcessed += Number(payload.processed || 0);
+      renderIngestProgress(payload.progress);
+      renderOpsStatus(`배치 ${batch} · 이번 ${payload.processed}개 · 누적 ${totalProcessed}개 · 상태 ${payload.status}`);
+      await loadStats();
+      if (payload.status === "completed") break;
+      if (!payload.processed) {
+        renderOpsStatus(`추가 처리 문서 없음 · 상태 ${payload.status}`);
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
+    if (stopBatchRequested) {
+      renderOpsStatus(`중지됨 · 누적 처리 ${totalProcessed}개`);
+    }
   } catch (error) {
     renderOpsStatus(error.message);
   } finally {
+    batchRunning = false;
+    stopBatchRequested = false;
     runBatchButton.disabled = false;
+    runBatchButton.textContent = "배치 수집";
   }
 });
 
@@ -277,3 +328,7 @@ Promise.all([loadStats(), loadHistory()]).catch((error) => {
   answerOutput.textContent = error.message;
   resultMeta.textContent = "초기화 오류";
 });
+
+setInterval(() => {
+  loadStats().catch((error) => renderOpsStatus(error.message));
+}, 15000);

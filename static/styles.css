@@ -185,6 +185,30 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.progress-track {
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #edf4f7;
+}
+
+.progress-track span {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--blue-strong);
+  transition: width 180ms ease;
+}
+
+.progress-detail {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .history-head h2 {
   font-size: 15px;
 }
