@@ -164,7 +164,7 @@ def page_stats(conn: sqlite3.Connection) -> dict[str, object]:
     }
 
 
-def read_page_stats_with_retry(max_attempts: int = 4) -> dict[str, object]:
+def read_page_stats_with_retry(max_attempts: int = 2) -> dict[str, object]:
     last_error = None
     for attempt in range(max_attempts):
         conn = None
@@ -567,24 +567,12 @@ def admin_config():
         space_weights = {}
         document_type_weights = {}
     database_url = os.getenv("DATABASE_URL", "")
-    database_connection_error = None
-    database_connection_ok = False
-    if database_url:
-        conn = None
-        try:
-            conn = connect_db()
-            database_connection_ok = True
-        except Exception as error:
-            logger.exception("Admin config DB connection check failed")
-            database_connection_error = str(error)
-        finally:
-            if conn is not None:
-                conn.close()
     return jsonify(
         {
             "admin_token_required": bool(os.getenv("ADMIN_TOKEN", "")),
-            "database_connection_error": database_connection_error,
-            "database_connection_ok": database_connection_ok,
+            "database_connection_error": None,
+            "database_connection_ok": None,
+            "database_connection_checked": False,
             "database_url_set": bool(database_url),
             "database_url_is_postgres": database_url.startswith(("postgres://", "postgresql://")),
             "document_type_weights": document_type_weights,

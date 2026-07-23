@@ -171,7 +171,7 @@ def connect_db():
 def connect_postgres(database_url: str) -> PostgresConnection:
     if psycopg is None or dict_row is None:
         raise RuntimeError("Postgres 사용을 위해 `pip install -r requirements.txt`를 실행하세요.")
-    raw_conn = psycopg.connect(database_url, row_factory=dict_row, connect_timeout=10)
+    raw_conn = psycopg.connect(database_url, row_factory=dict_row, connect_timeout=3)
     conn = PostgresConnection(raw_conn)
     conn.execute(
         """
