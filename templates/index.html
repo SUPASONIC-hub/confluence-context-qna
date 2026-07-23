@@ -6,7 +6,7 @@
     <title>Confluence Knowledge QNA</title>
     <link rel="icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260723-1') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260723-3') }}" />
   </head>
   <body>
     <div class="app-shell">
@@ -60,7 +60,13 @@
           </div>
           <form id="askForm" class="ask-form">
             <textarea id="questionInput" rows="3" placeholder="예: 현재 환불 정책 프로세스가 정상인가요?"></textarea>
+            <div class="quick-prompts" id="quickPrompts">
+              <button type="button" data-question="현재 최신 정책 기준으로 정상 운영 중인지 확인해줘">정상 여부</button>
+              <button type="button" data-question="이 주제의 최종 결정사항과 근거 문서를 찾아줘">최종 결정</button>
+              <button type="button" data-question="관련 정책, 예외, 리스크를 함께 비교해줘">리스크 비교</button>
+            </div>
             <div class="form-actions">
+              <span class="input-hint">Ctrl+Enter로 질문</span>
               <button id="askButton" type="submit">질문하기</button>
             </div>
           </form>
@@ -87,6 +93,6 @@
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js', v='20260723-2') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260723-3') }}"></script>
   </body>
 </html>

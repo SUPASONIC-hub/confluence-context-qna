@@ -956,15 +956,31 @@ def row_to_hit(row: sqlite3.Row, score: float, matched_terms: Iterable[str]) -> 
     )
 
 
+def compact_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip().lower()
+
+
+def phrase_candidates(question: str) -> list[str]:
+    tokens = [token for token in question_tokens(question) if token not in INTENT_ONLY_TERMS]
+    phrases = []
+    normalized = compact_text(question)
+    if len(normalized) >= 4:
+        phrases.append(normalized)
+    phrases.extend(" ".join(tokens[index : index + 2]) for index in range(len(tokens) - 1))
+    phrases.extend(token for token in tokens if len(token) >= 4)
+    return ordered_unique(phrases)
+
+
 def term_score(
     row: sqlite3.Row,
+    query: str,
     terms: list[str],
     essentials: list[str],
     preferred_doc_types: set[str],
     config: Config,
 ) -> tuple[float, list[str]]:
-    title = row["title"].lower()
-    text = row["text"].lower()
+    title = compact_text(row["title"])
+    text = compact_text(row["text"])
     matched = []
     score = recency_boost(row["last_updated"])
     document_type = classify_document(row["title"], row["text"])
@@ -976,6 +992,14 @@ def term_score(
             multiplier = 3 if term in essentials else 1
             score += title_count * 6 * multiplier
             score += min(text_count, 8) * 1.2 * multiplier
+    for phrase in phrase_candidates(query)[:8]:
+        if phrase in title:
+            score += 12.0
+        elif phrase in text:
+            score += 4.0
+    if terms:
+        coverage = len(set(matched)) / max(len(set(terms[:12])), 1)
+        score += coverage * 8.0
     matched_essentials = [term for term in essentials if term in matched]
     if essentials and not matched_essentials:
         return -999.0, matched
@@ -987,6 +1011,8 @@ def term_score(
         score += 1.5
     if document_type in preferred_doc_types:
         score += 5.0
+    elif preferred_doc_types and document_type == "일반문서":
+        score -= 2.0
     if document_type in {"정책", "결정사항"} and any(term in title for term in ("최종", "확정", "정책", "기준")):
         score += 4.0
     if row["space"] in config.official_spaces:
@@ -1041,7 +1067,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
 
     hits = []
     for row in rows_by_id.values():
-        score, matched = term_score(row, terms, essentials, preferred_doc_types, config)
+        score, matched = term_score(row, query, terms, essentials, preferred_doc_types, config)
         if matched and score > -999:
             hits.append(row_to_hit(row, score, matched))
     return sorted(hits, key=lambda hit: (hit.score, hit.last_updated), reverse=True)[:limit]
@@ -1090,6 +1116,18 @@ def hit_summary(hit: SearchHit) -> str:
     )
 
 
+def confidence_label(page_hits: list[SearchHit]) -> str:
+    if not page_hits:
+        return "낮음"
+    top = page_hits[0]
+    official_count = sum(1 for hit in page_hits[:8] if hit.document_type in {"정책", "매뉴얼", "결정사항"})
+    if top.score >= 28 and official_count >= 2:
+        return "높음"
+    if top.score >= 16 or official_count >= 1:
+        return "중간"
+    return "낮음"
+
+
 def report(question: str, hits: list[SearchHit]) -> str:
     terms = extract_terms(question)
     essentials = essential_terms(question)
@@ -1106,6 +1144,7 @@ def report(question: str, hits: list[SearchHit]) -> str:
         return "\n".join(lines + ["검색 결과가 없습니다. 수집 범위나 키워드를 넓혀야 합니다."])
 
     page_hits = unique_page_hits(hits)
+    confidence = confidence_label(page_hits)
     latest_hit = max(page_hits, key=lambda hit: hit.last_updated)
     top_hit = page_hits[0]
     official_like = [
@@ -1118,6 +1157,7 @@ def report(question: str, hits: list[SearchHit]) -> str:
 
     lines += [
         "## 1. 결론 후보",
+        f"- 검색 신뢰도: `{confidence}`. 후보 문서 {len(page_hits)}개, 근거 chunk {len(hits)}개를 비교했습니다.",
         f"- 현재 검색 기준으로는 `{conclusion_hit.title}` 문서를 가장 먼저 확인하는 것이 적절합니다.",
         f"- 문서 유형은 `{conclusion_hit.document_type}`이고, 마지막 수정일은 `{conclusion_hit.last_updated or '-'}`입니다.",
         "- 아래 근거만으로 정상 여부를 확정하기 어렵다면 같은 주제의 정책/매뉴얼/이슈 문서를 추가로 확인해야 합니다.",

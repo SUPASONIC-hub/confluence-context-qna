@@ -9,6 +9,7 @@ const sourceCount = document.querySelector("#sourceCount");
 const resultMeta = document.querySelector("#resultMeta");
 const stats = document.querySelector("#stats");
 const sourceFilters = document.querySelector("#sourceFilters");
+const quickPrompts = document.querySelector("#quickPrompts");
 const adminTokenInput = document.querySelector("#adminTokenInput");
 const saveTokenButton = document.querySelector("#saveTokenButton");
 const runBatchButton = document.querySelector("#runBatchButton");
@@ -61,6 +62,47 @@ function linkifyText(value) {
     /(https?:\/\/[^\s<]+)/g,
     '<a href="$1" target="_blank" rel="noreferrer">$1</a>'
   );
+}
+
+function inlineFormat(value) {
+  return linkifyText(value)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+
+function renderAnswerMarkdown(value) {
+  const lines = String(value || "").split(/\r?\n/);
+  const html = [];
+  let listOpen = false;
+  for (const line of lines) {
+    if (line.startsWith("## ")) {
+      if (listOpen) {
+        html.push("</ul>");
+        listOpen = false;
+      }
+      html.push(`<h4>${inlineFormat(line.slice(3))}</h4>`);
+    } else if (line.startsWith("# ")) {
+      if (listOpen) {
+        html.push("</ul>");
+        listOpen = false;
+      }
+      html.push(`<h3>${inlineFormat(line.slice(2))}</h3>`);
+    } else if (line.startsWith("- ")) {
+      if (!listOpen) {
+        html.push("<ul>");
+        listOpen = true;
+      }
+      html.push(`<li>${inlineFormat(line.slice(2))}</li>`);
+    } else if (line.trim()) {
+      if (listOpen) {
+        html.push("</ul>");
+        listOpen = false;
+      }
+      html.push(`<p>${inlineFormat(line)}</p>`);
+    }
+  }
+  if (listOpen) html.push("</ul>");
+  return html.join("");
 }
 
 async function fetchJson(url, options) {
@@ -184,21 +226,42 @@ function renderSources(hits = currentHits) {
   }
   sourceList.innerHTML = visibleHits.map((hit) => `
     <article class="source-card">
-      <a href="${escapeText(hit.url)}" target="_blank" rel="noreferrer">${escapeText(hit.title)}</a>
-      <div class="source-meta">${escapeText(hit.space)} · ${escapeText(hit.document_type || "일반문서")} · chunk ${hit.chunk_index ?? 0} · 등록 ${formatDate(hit.created_at)} · 수정 ${formatDate(hit.last_updated)} · score ${hit.score}</div>
-      <div class="source-meta">매칭 ${escapeText((hit.matched_terms || []).slice(0, 8).join(", ") || "-")}</div>
-      <p>${escapeText(hit.excerpt)}</p>
+      <div class="source-card-head">
+        <a href="${escapeText(hit.url)}" target="_blank" rel="noreferrer">${escapeText(hit.title)}</a>
+        <span>${escapeText(hit.document_type || "일반문서")}</span>
+      </div>
+      <div class="source-meta">${escapeText(hit.space)} · chunk ${hit.chunk_index ?? 0} · 등록 ${formatDate(hit.created_at)} · 수정 ${formatDate(hit.last_updated)} · score ${hit.score}</div>
+      <div class="term-chips">${(hit.matched_terms || []).slice(0, 8).map((term) => `<span>${escapeText(term)}</span>`).join("") || "<span>-</span>"}</div>
+      <p>${highlightTerms(hit.excerpt, hit.matched_terms || [])}</p>
     </article>
   `).join("");
+}
+
+function highlightTerms(value, terms) {
+  let escaped = escapeText(value);
+  const safeTerms = [...new Set(terms || [])]
+    .filter((term) => String(term).length >= 2)
+    .sort((a, b) => String(b).length - String(a).length)
+    .slice(0, 10);
+  for (const term of safeTerms) {
+    const pattern = new RegExp(`(${escapeRegExp(escapeText(term))})`, "gi");
+    escaped = escaped.replace(pattern, "<mark>$1</mark>");
+  }
+  return escaped;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function renderResult(payload) {
   activeHistoryId = payload.id;
   currentHits = payload.hits || [];
   activeSourceType = "전체";
-  answerOutput.innerHTML = linkifyText(payload.answer);
+  answerOutput.innerHTML = renderAnswerMarkdown(payload.answer);
   const mode = payload.answer_mode ? ` · ${payload.answer_mode}` : "";
-  resultMeta.textContent = `${formatDate(payload.created_at)} · 근거 ${payload.hit_count}개${mode}`;
+  const pages = new Set(currentHits.map((hit) => hit.page_id)).size;
+  resultMeta.textContent = `${formatDate(payload.created_at)} · 문서 ${pages}개 · 근거 ${payload.hit_count}개${mode}`;
   renderSources(currentHits);
 }
 
@@ -242,6 +305,22 @@ askForm.addEventListener("submit", async (event) => {
     askButton.textContent = "질문하기";
   }
 });
+
+questionInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    askForm.requestSubmit();
+  }
+});
+
+if (quickPrompts) {
+  quickPrompts.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-question]");
+    if (!button) return;
+    questionInput.value = button.dataset.question;
+    questionInput.focus();
+  });
+}
 
 historyList.addEventListener("click", (event) => {
   const button = event.target.closest(".history-item");

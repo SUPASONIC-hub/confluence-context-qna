@@ -176,6 +176,21 @@ def error_payload(error: Exception) -> dict[str, str]:
     return {"error": message[:1200]}
 
 
+def focused_excerpt(text: str, terms: list[str], size: int = 520) -> str:
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= size:
+        return compact
+    lowered = compact.lower()
+    positions = [lowered.find(term.lower()) for term in terms if term and lowered.find(term.lower()) >= 0]
+    center = min(positions) if positions else 0
+    start = max(center - size // 3, 0)
+    end = min(start + size, len(compact))
+    start = max(end - size, 0)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(compact) else ""
+    return f"{prefix}{compact[start:end]}{suffix}"
+
+
 def db_count(conn: sqlite3.Connection, table: str) -> int:
     return int(conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"])
 
@@ -235,7 +250,7 @@ def serialize_hits(hits) -> list[dict[str, object]]:
             "document_type": hit.document_type,
             "matched_terms": list(hit.matched_terms),
             "chunk_index": hit.chunk_index,
-            "excerpt": hit.text[:420] + ("..." if len(hit.text) > 420 else ""),
+            "excerpt": focused_excerpt(hit.text, list(hit.matched_terms)),
         }
         for hit in hits
     ]
