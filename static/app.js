@@ -250,7 +250,27 @@ function sectionId(title) {
   return `section-${String(title).replace(/[^0-9A-Za-z가-힣]+/g, "-").replace(/^-|-$/g, "").slice(0, 48)}`;
 }
 
+function shouldRetryFetch(response, options) {
+  const method = String(options?.method || "GET").toUpperCase();
+  return method === "GET" && [502, 503, 504].includes(response.status);
+}
+
 async function fetchJson(url, options) {
+  const attempts = String(options?.method || "GET").toUpperCase() === "GET" ? 3 : 1;
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fetchJsonOnce(url, options);
+    } catch (error) {
+      lastError = error;
+      if (!error.retryable || attempt === attempts) break;
+      await new Promise((resolve) => setTimeout(resolve, 1200 * attempt));
+    }
+  }
+  throw lastError;
+}
+
+async function fetchJsonOnce(url, options) {
   const response = await fetch(apiUrl(url), options);
   const contentType = response.headers.get("content-type") || "";
   const body = await response.text();
@@ -266,9 +286,11 @@ async function fetchJson(url, options) {
     const rawDetail = payload?.error || body.trim() || response.statusText;
     let detail = String(rawDetail).replace(/\s+/g, " ").slice(0, 220);
     if (response.status === 502 && body.trim().startsWith("<!DOCTYPE html>")) {
-      detail = "Render gateway error. 요청이 오래 걸렸거나 웹 프로세스가 재시작되었습니다. 배치 크기를 낮추고 잠시 후 다시 시도하세요.";
+      detail = "Render gateway error. 배포/재시작 중이거나 요청이 오래 걸렸습니다. 잠시 후 자동 재시도합니다.";
     }
-    throw new Error(`요청 실패: ${response.status} ${detail}`);
+    const error = new Error(`요청 실패: ${response.status} ${detail}`);
+    error.retryable = shouldRetryFetch(response, options);
+    throw error;
   }
   if (!payload) {
     throw new Error(`JSON 응답이 아닙니다: ${response.status} ${body.trim().slice(0, 120)}`);
