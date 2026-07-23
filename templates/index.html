@@ -6,7 +6,7 @@
     <title>Confluence Knowledge QNA</title>
     <link rel="icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260723-3') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260723-7') }}" />
   </head>
   <body>
     <div class="app-shell">
@@ -60,7 +60,7 @@
 
       <main class="workspace">
         <section class="query-panel">
-          <div>
+          <div class="query-head">
             <p class="eyebrow">Knowledge desk</p>
             <h2>Confluence 문서에서 정책 근거와 리스크 후보를 빠르게 찾습니다.</h2>
           </div>
@@ -84,7 +84,7 @@
           </form>
         </section>
 
-        <section class="result-grid">
+        <section class="result-stack">
           <article class="answer-panel">
             <div class="panel-title">
               <h3>답변 결과</h3>
@@ -99,7 +99,7 @@
             <div id="answerOutput" class="answer-output">왼쪽 히스토리를 선택하거나 새 질문을 입력하세요.</div>
           </article>
 
-          <aside class="source-panel">
+          <section class="source-panel">
             <div class="panel-title">
               <h3>근거 문서</h3>
               <label class="source-sort">
@@ -113,11 +113,11 @@
             </div>
             <div id="sourceFilters" class="source-filters"></div>
             <div id="sourceList" class="source-list"></div>
-          </aside>
+          </section>
         </section>
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js', v='20260723-6') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260723-7') }}"></script>
   </body>
 </html>

@@ -257,26 +257,67 @@ function sortedHits(hits) {
   return result.sort((a, b) => b.score - a.score);
 }
 
+function groupHitsByPage(hits) {
+  const groups = new Map();
+  for (const hit of hits) {
+    const key = hit.page_id || hit.url || hit.title;
+    const group = groups.get(key) || {
+      page_id: hit.page_id,
+      title: hit.title,
+      url: hit.url,
+      space: hit.space,
+      document_type: hit.document_type || "일반문서",
+      last_updated: hit.last_updated,
+      created_at: hit.created_at,
+      score: hit.score,
+      matched_terms: new Set(),
+      chunks: [],
+    };
+    group.score = Math.max(Number(group.score || 0), Number(hit.score || 0));
+    if (String(hit.last_updated || "") > String(group.last_updated || "")) {
+      group.last_updated = hit.last_updated;
+    }
+    for (const term of hit.matched_terms || []) {
+      group.matched_terms.add(term);
+    }
+    group.chunks.push(hit);
+    groups.set(key, group);
+  }
+  return [...groups.values()].map((group) => ({
+    ...group,
+    matched_terms: [...group.matched_terms],
+    chunks: sortedHits(group.chunks),
+  }));
+}
+
 function renderSources(hits = currentHits) {
   const filteredHits = activeSourceType === "전체"
     ? hits
     : hits.filter((hit) => (hit.document_type || "일반문서") === activeSourceType);
   const visibleHits = sortedHits(filteredHits);
+  const visibleGroups = groupHitsByPage(visibleHits);
   renderSourceFilters(hits);
-  sourceCount.textContent = `${visibleHits.length}개`;
-  if (!visibleHits.length) {
+  sourceCount.textContent = `문서 ${visibleGroups.length}개 · 근거 ${visibleHits.length}개`;
+  if (!visibleGroups.length) {
     sourceList.innerHTML = `<div class="empty-state">표시할 근거 문서가 없습니다.</div>`;
     return;
   }
-  sourceList.innerHTML = visibleHits.map((hit) => `
-    <article class="source-card">
+  sourceList.innerHTML = visibleGroups.map((group) => `
+    <article class="source-card source-card-group">
       <div class="source-card-head">
-        <a href="${escapeText(hit.url)}" target="_blank" rel="noreferrer">${escapeText(hit.title)}</a>
-        <span>${escapeText(hit.document_type || "일반문서")}</span>
+        <a href="${escapeText(group.url)}" target="_blank" rel="noreferrer">${escapeText(group.title)}</a>
+        <span>${escapeText(group.document_type)}</span>
       </div>
-      <div class="source-meta">${escapeText(hit.space)} · chunk ${hit.chunk_index ?? 0} · 등록 ${formatDate(hit.created_at)} · 수정 ${formatDate(hit.last_updated)} · score ${hit.score}</div>
-      <div class="term-chips">${(hit.matched_terms || []).slice(0, 8).map((term) => `<span>${escapeText(term)}</span>`).join("") || "<span>-</span>"}</div>
-      <p>${highlightTerms(hit.excerpt, hit.matched_terms || [])}</p>
+      <div class="source-meta">${escapeText(group.space)} · 근거 chunk ${group.chunks.length}개 · 등록 ${formatDate(group.created_at)} · 수정 ${formatDate(group.last_updated)} · 최고 score ${Number(group.score || 0).toFixed(2)}</div>
+      <div class="term-chips">${group.matched_terms.slice(0, 10).map((term) => `<span>${escapeText(term)}</span>`).join("") || "<span>-</span>"}</div>
+      <div class="chunk-list">
+        ${group.chunks.map((hit) => `
+          <section class="chunk-match">
+            <div class="chunk-meta">chunk ${hit.chunk_index ?? 0} · score ${hit.score}</div>
+            <p>${highlightTerms(hit.excerpt, hit.matched_terms || [])}</p>
+          </section>
+        `).join("")}
+      </div>
     </article>
   `).join("");
 }
