@@ -932,7 +932,8 @@ button[type="submit"]:disabled {
   line-height: 1.45;
 }
 
-.source-jump {
+.source-jump,
+.source-toggle {
   min-height: 30px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -944,9 +945,14 @@ button[type="submit"]:disabled {
   cursor: pointer;
 }
 
-.source-jump:hover {
+.source-jump:hover,
+.source-toggle:hover {
   border-color: var(--blue-strong);
   background: #eef9fc;
+}
+
+.source-toggle {
+  margin-left: 6px;
 }
 
 .source-card p {

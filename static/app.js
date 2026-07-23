@@ -42,6 +42,7 @@ let currentAnswer = "";
 let activeSourceType = "전체";
 let activeSourceSort = "score";
 let activeSourceKeyword = "";
+let expandedSourcePages = new Set();
 let adminToken = localStorage.getItem("adminToken") || "";
 let batchRunning = false;
 let stopBatchRequested = false;
@@ -358,11 +359,17 @@ function renderSources(hits = currentHits) {
 }
 
 function renderEvidenceGroup(group, { compact = false, withAnchor = false } = {}) {
-  const chunks = compact ? group.chunks.slice(0, 2) : group.chunks;
+  const anchorId = pageAnchorId(group.page_id || group.url || group.title);
+  const expanded = compact || expandedSourcePages.has(anchorId);
+  const chunks = compact || expanded ? group.chunks.slice(0, compact ? 2 : group.chunks.length) : group.chunks.slice(0, 2);
   const moreLabel = compact && group.chunks.length > chunks.length
     ? `<div class="chunk-more">추가 근거 ${group.chunks.length - chunks.length}개는 아래 근거 문서 목록에서 확인</div>`
     : "";
-  const anchorId = pageAnchorId(group.page_id || group.url || group.title);
+  const toggleButton = !compact && group.chunks.length > 2
+    ? `<button class="source-toggle" type="button" data-source-toggle="${escapeText(anchorId)}">
+        ${expanded ? "근거 접기" : `근거 펼치기 ${group.chunks.length - 2}개`}
+      </button>`
+    : "";
   const detailButton = compact
     ? `<button class="source-jump" type="button" data-source-page="${escapeText(anchorId)}">상세 근거 보기</button>`
     : "";
@@ -375,6 +382,7 @@ function renderEvidenceGroup(group, { compact = false, withAnchor = false } = {}
       <div class="source-meta">${escapeText(group.space)} · 근거 chunk ${group.chunks.length}개 · 등록 ${formatDate(group.created_at)} · 수정 ${formatDate(group.last_updated)} · 최고 score ${Number(group.score || 0).toFixed(2)}</div>
       <div class="term-chips">${group.matched_terms.slice(0, 10).map((term) => `<span>${escapeText(term)}</span>`).join("") || "<span>-</span>"}</div>
       ${detailButton}
+      ${toggleButton}
       <div class="chunk-list">
         ${chunks.map((hit) => `
           <section class="chunk-match">
@@ -428,6 +436,7 @@ function renderResult(payload) {
   currentHits = payload.hits || [];
   activeSourceType = "전체";
   activeSourceKeyword = "";
+  expandedSourcePages = new Set();
   if (sourceSearchInput) sourceSearchInput.value = "";
   answerOutput.innerHTML = renderAnswerMarkdown(payload.answer);
   renderAnswerToc(payload.answer);
@@ -701,6 +710,21 @@ sourceFilters.addEventListener("click", (event) => {
   activeSourceType = button.dataset.type;
   renderSources(currentHits);
 });
+
+if (sourceList) {
+  sourceList.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-source-toggle]");
+    if (!button) return;
+    const key = button.dataset.sourceToggle;
+    if (expandedSourcePages.has(key)) {
+      expandedSourcePages.delete(key);
+    } else {
+      expandedSourcePages.add(key);
+    }
+    renderSources(currentHits);
+    document.getElementById(key)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  });
+}
 
 if (sourceSort) {
   sourceSort.addEventListener("change", () => {
