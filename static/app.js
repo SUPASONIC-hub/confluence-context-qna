@@ -51,6 +51,7 @@ let adminTokenRequired = false;
 let batchRunning = false;
 let stopBatchRequested = false;
 let autoRestoreAttempted = false;
+let persistenceWarningShown = false;
 
 function apiUrl(path) {
   return new URL(path, window.location.origin).toString();
@@ -316,6 +317,11 @@ function renderStats(payload) {
     <div><strong>${rankingConfigured ? "보정" : "기본"}</strong><span>랭킹</span></div>
   `;
   renderIngestProgress(ingest.progress);
+  if (!persistence.uses_persistent_database && !persistenceWarningShown) {
+    persistenceWarningShown = true;
+    const emptyHint = Number(payload.page_count || 0) === 0 ? " · 현재 서버 문서 0개" : "";
+    renderOpsStatus(`임시 SQLite DB 사용 중${emptyHint} · Render DATABASE_URL(Postgres) 연결 필요`);
+  }
 }
 
 function renderOpsStatus(message) {
@@ -328,8 +334,15 @@ function renderAdminTokenStatus(config) {
   adminTokenRequired = required;
   adminTokenStatus.classList.toggle("token-required", required);
   adminTokenStatus.classList.toggle("token-open", !required);
+  if (config?.error) {
+    adminTokenStatus.textContent = "관리자 설정 일부 오류";
+    renderOpsStatus(`관리자 설정 일부 오류 · ${config.error}`);
+    return;
+  }
   if (!required) {
-    adminTokenStatus.textContent = "관리자 토큰 없이 운영 가능";
+    adminTokenStatus.textContent = config?.database_url_is_postgres === false
+      ? "관리자 토큰 없음 · 임시 DB"
+      : "관리자 토큰 없이 운영 가능";
     return;
   }
   adminTokenStatus.textContent = adminToken ? "관리자 토큰 저장됨" : "관리자 토큰 필요";
@@ -711,8 +724,9 @@ async function loadAdminConfig() {
     renderAdminTokenStatus(await fetchJson("/api/admin/config"));
   } catch (error) {
     if (!adminTokenStatus) return;
-    adminTokenStatus.textContent = "관리자 설정 확인 실패";
+    adminTokenStatus.textContent = `관리자 설정 확인 실패: ${error.message}`;
     adminTokenStatus.classList.add("token-required");
+    renderOpsStatus(`관리자 설정 확인 실패 · ${error.message}`);
   }
 }
 
@@ -933,6 +947,11 @@ async function runBatchLoop({ reset = false } = {}) {
     renderOpsStatus("현재 배치가 끝나면 중지합니다.");
     return;
   }
+  await loadAdminConfig();
+  if (adminTokenRequired && !adminToken) {
+    renderOpsStatus("배치 수집 중단 · 관리자 토큰을 저장한 뒤 다시 실행하세요.");
+    return;
+  }
   batchRunning = true;
   stopBatchRequested = false;
   runBatchButton.disabled = true;
@@ -971,7 +990,13 @@ async function runBatchLoop({ reset = false } = {}) {
       renderOpsStatus(`배치 일시 종료 · 누적 처리 ${totalProcessed}개 · 상태 ${finalStatus}`);
     }
   } catch (error) {
-    renderOpsStatus(`수집 실패 · ${error.message}`);
+    if (String(error.message || "").includes("admin token required")) {
+      adminTokenRequired = true;
+      renderAdminTokenStatus({ admin_token_required: true });
+      renderOpsStatus("수집 실패 · 관리자 토큰을 저장한 뒤 다시 실행하세요.");
+    } else {
+      renderOpsStatus(`수집 실패 · ${error.message}`);
+    }
   } finally {
     batchRunning = false;
     stopBatchRequested = false;

@@ -87,7 +87,7 @@ def load_config() -> Config:
         email=os.getenv("CONFLUENCE_EMAIL", ""),
         api_token=os.getenv("CONFLUENCE_API_TOKEN", ""),
         space_key=os.getenv("CONFLUENCE_SPACE_KEY") or None,
-        page_limit=int(os.getenv("CONFLUENCE_PAGE_LIMIT", "0")),
+        page_limit=parse_int_env("CONFLUENCE_PAGE_LIMIT", 0),
         official_spaces=tuple(
             space.strip()
             for space in os.getenv("CONFLUENCE_OFFICIAL_SPACES", "").split(",")
@@ -96,6 +96,13 @@ def load_config() -> Config:
         space_weights=space_weights,
         document_type_weights=doc_type_weights,
     )
+
+
+def parse_int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def parse_weight_map(raw: str) -> dict[str, float]:

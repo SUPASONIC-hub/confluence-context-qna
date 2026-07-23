@@ -542,13 +542,28 @@ def ingest_batch_api():
 
 @app.get("/api/admin/config")
 def admin_config():
-    config = load_config()
+    config_error = None
+    try:
+        config = load_config()
+        official_spaces = list(config.official_spaces)
+        space_weights = config.space_weights
+        document_type_weights = config.document_type_weights
+    except Exception as error:
+        logger.exception("Admin config load failed")
+        config_error = str(error)
+        official_spaces = []
+        space_weights = {}
+        document_type_weights = {}
+    database_url = os.getenv("DATABASE_URL", "")
     return jsonify(
         {
             "admin_token_required": bool(os.getenv("ADMIN_TOKEN", "")),
-            "official_spaces": list(config.official_spaces),
-            "space_weights": config.space_weights,
-            "document_type_weights": config.document_type_weights,
+            "database_url_set": bool(database_url),
+            "database_url_is_postgres": database_url.startswith(("postgres://", "postgresql://")),
+            "document_type_weights": document_type_weights,
+            "error": config_error,
+            "official_spaces": official_spaces,
+            "space_weights": space_weights,
         }
     )
 

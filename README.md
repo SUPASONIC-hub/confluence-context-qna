@@ -117,6 +117,8 @@ DATABASE_URL=Render Postgres 연결 문자열
 
 `render.yaml`에는 무료 Render Postgres가 포함되어 있습니다. Render Blueprint로 생성하면 `DATABASE_URL`이 웹 서비스에 자동 연결됩니다.
 
+운영 패널이나 점검 결과가 `DB sqlite`, `임시 DB`, `문서 0`으로 보이면 배포 서비스가 Postgres를 사용하지 못하고 있는 상태입니다. Render 웹 서비스의 Environment에 `DATABASE_URL`이 Postgres 연결 문자열로 들어가 있는지 확인하고, 변경 후 서비스를 다시 배포/재시작해야 합니다. 이 상태에서 수집하면 재배포나 재시작 때 서버 문서가 다시 0개가 될 수 있습니다.
+
 권장 수집 방식은 재시작에 안전한 배치 수집입니다.
 
 ```powershell
@@ -140,6 +142,7 @@ https://YOUR-SERVICE.onrender.com/api/admin/diagnostics
 ```
 
 브라우저 운영 패널에서는 관리자 토큰 저장 후 `배치 수집`으로 이어서 수집하고, `처음부터 수집`으로 저장된 수집 진행 위치를 0부터 다시 계산합니다. 기존 문서는 삭제하지 않고 upsert로 최신 내용으로 갱신합니다.
+`관리자 토큰 필요`가 표시되면 Render의 `ADMIN_TOKEN`과 같은 값을 운영 패널에 저장한 뒤 배치 수집을 실행합니다.
 
 CSV 백업:
 
