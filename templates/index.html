@@ -6,7 +6,7 @@
     <title>Confluence Knowledge QNA</title>
     <link rel="icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260723-11') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260723-12') }}" />
   </head>
   <body>
     <div class="app-shell">
@@ -30,6 +30,7 @@
             <h2>운영</h2>
             <button id="refreshStats" type="button" title="상태 새로고침">↻</button>
           </div>
+          <div id="adminTokenStatus" class="token-status">관리자 토큰 상태 확인 중</div>
           <input id="adminTokenInput" class="token-input" type="password" placeholder="관리자 토큰" autocomplete="off" />
           <div class="ops-actions">
             <button id="saveTokenButton" type="button">토큰 저장</button>
@@ -119,6 +120,6 @@
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js', v='20260723-11') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260723-12') }}"></script>
   </body>
 </html>

@@ -16,6 +16,7 @@ const stats = document.querySelector("#stats");
 const sourceFilters = document.querySelector("#sourceFilters");
 const quickPrompts = document.querySelector("#quickPrompts");
 const adminTokenInput = document.querySelector("#adminTokenInput");
+const adminTokenStatus = document.querySelector("#adminTokenStatus");
 const saveTokenButton = document.querySelector("#saveTokenButton");
 const runBatchButton = document.querySelector("#runBatchButton");
 const resetBatchButton = document.querySelector("#resetBatchButton");
@@ -68,6 +69,14 @@ function escapeText(value) {
     '"': "&quot;",
     "'": "&#039;",
   }[char]));
+}
+
+function pageAnchorId(value) {
+  const normalized = String(value || "source")
+    .replace(/[^0-9A-Za-z가-힣_-]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 72);
+  return `source-${normalized || "page"}`;
 }
 
 function linkifyText(value) {
@@ -204,6 +213,18 @@ function renderOpsStatus(message) {
   opsStatus.textContent = message;
 }
 
+function renderAdminTokenStatus(config) {
+  if (!adminTokenStatus) return;
+  const required = Boolean(config?.admin_token_required);
+  adminTokenStatus.classList.toggle("token-required", required);
+  adminTokenStatus.classList.toggle("token-open", !required);
+  if (!required) {
+    adminTokenStatus.textContent = "관리자 토큰 없이 운영 가능";
+    return;
+  }
+  adminTokenStatus.textContent = adminToken ? "관리자 토큰 저장됨" : "관리자 토큰 필요";
+}
+
 function renderDiagnostics(payload) {
   const counts = payload.counts || {};
   const config = payload.config || {};
@@ -311,23 +332,28 @@ function renderSources(hits = currentHits) {
     return;
   }
   sourceList.innerHTML = visibleGroups.map((group) => `
-    ${renderEvidenceGroup(group)}
+    ${renderEvidenceGroup(group, { withAnchor: true })}
   `).join("");
 }
 
-function renderEvidenceGroup(group, { compact = false } = {}) {
+function renderEvidenceGroup(group, { compact = false, withAnchor = false } = {}) {
   const chunks = compact ? group.chunks.slice(0, 2) : group.chunks;
   const moreLabel = compact && group.chunks.length > chunks.length
     ? `<div class="chunk-more">추가 근거 ${group.chunks.length - chunks.length}개는 아래 근거 문서 목록에서 확인</div>`
     : "";
+  const anchorId = pageAnchorId(group.page_id || group.url || group.title);
+  const detailButton = compact
+    ? `<button class="source-jump" type="button" data-source-page="${escapeText(anchorId)}">상세 근거 보기</button>`
+    : "";
   return `
-    <article class="source-card source-card-group ${compact ? "inline-evidence-card" : ""}">
+    <article class="source-card source-card-group ${compact ? "inline-evidence-card" : ""}" ${withAnchor ? `id="${escapeText(anchorId)}"` : ""}>
       <div class="source-card-head">
         <a href="${escapeText(group.url)}" target="_blank" rel="noreferrer">${escapeText(group.title)}</a>
         <span>${escapeText(group.document_type)}</span>
       </div>
       <div class="source-meta">${escapeText(group.space)} · 근거 chunk ${group.chunks.length}개 · 등록 ${formatDate(group.created_at)} · 수정 ${formatDate(group.last_updated)} · 최고 score ${Number(group.score || 0).toFixed(2)}</div>
       <div class="term-chips">${group.matched_terms.slice(0, 10).map((term) => `<span>${escapeText(term)}</span>`).join("") || "<span>-</span>"}</div>
+      ${detailButton}
       <div class="chunk-list">
         ${chunks.map((hit) => `
           <section class="chunk-match">
@@ -492,6 +518,16 @@ async function loadStats() {
   renderStats(await fetchJson("/api/stats"));
 }
 
+async function loadAdminConfig() {
+  try {
+    renderAdminTokenStatus(await fetchJson("/api/admin/config"));
+  } catch (error) {
+    if (!adminTokenStatus) return;
+    adminTokenStatus.textContent = "관리자 설정 확인 실패";
+    adminTokenStatus.classList.add("token-required");
+  }
+}
+
 async function loadHistory() {
   allHistoryItems = await fetchJson("/api/history");
   renderHistory();
@@ -592,6 +628,18 @@ if (searchMetaPanel) {
   });
 }
 
+if (inlineEvidenceList) {
+  inlineEvidenceList.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-source-page]");
+    if (!button) return;
+    const target = document.getElementById(button.dataset.sourcePage);
+    if (!target) return;
+    target.scrollIntoView({ block: "start", behavior: "smooth" });
+    target.classList.add("source-card-focus");
+    setTimeout(() => target.classList.remove("source-card-focus"), 1400);
+  });
+}
+
 questionInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
     event.preventDefault();
@@ -647,6 +695,7 @@ saveTokenButton.addEventListener("click", () => {
     localStorage.removeItem("adminToken");
     renderOpsStatus("관리자 토큰 제거됨");
   }
+  loadAdminConfig();
 });
 
 async function runBatchLoop({ reset = false } = {}) {
@@ -805,7 +854,7 @@ if (adminTokenInput) {
   adminTokenInput.value = adminToken;
 }
 
-Promise.all([loadStats(), loadHistory()]).catch((error) => {
+Promise.all([loadStats(), loadHistory(), loadAdminConfig()]).catch((error) => {
   answerOutput.textContent = error.message;
   resultMeta.textContent = "초기화 오류";
 });

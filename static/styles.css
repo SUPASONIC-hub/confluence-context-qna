@@ -183,6 +183,29 @@ button,
   color: var(--ink);
 }
 
+.token-status {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.token-status.token-required {
+  border-color: var(--peach);
+  background: #fff7f4;
+  color: #8a3a2e;
+}
+
+.token-status.token-open {
+  border-color: var(--blue);
+  background: #eef9fc;
+  color: var(--blue-deep);
+}
+
 .ops-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -842,6 +865,11 @@ button[type="submit"]:disabled {
   box-shadow: none;
 }
 
+.source-card-focus {
+  border-color: var(--blue-strong);
+  box-shadow: 0 0 0 3px rgba(141, 210, 232, 0.32);
+}
+
 .source-card-head {
   display: flex;
   align-items: flex-start;
@@ -880,6 +908,23 @@ button[type="submit"]:disabled {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.source-jump {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+  color: var(--blue-deep);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.source-jump:hover {
+  border-color: var(--blue-strong);
+  background: #eef9fc;
 }
 
 .source-card p {
