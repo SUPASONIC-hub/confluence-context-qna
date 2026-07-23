@@ -474,7 +474,7 @@ def fetch_page_batch(config: Config, space: str, start: int, limit: int) -> list
     return data.get("results", [])
 
 
-def upsert_page(conn: sqlite3.Connection, config: Config, item: dict) -> None:
+def page_record(config: Config, item: dict) -> dict[str, object]:
     version = item.get("version", {})
     history = item.get("history", {})
     author = (version.get("by") or {}).get("displayName", "unknown")
@@ -485,7 +485,27 @@ def upsert_page(conn: sqlite3.Connection, config: Config, item: dict) -> None:
     created_at = history.get("createdDate", "")
     last_updated = version.get("when", "")
     url = page_url(config, item)
-    conn.execute(
+    return {
+        "page_id": item["id"],
+        "title": title,
+        "text": text,
+        "created_at": created_at,
+        "last_updated": last_updated,
+        "author": author,
+        "space": space,
+        "url": url,
+        "raw_json": json.dumps(item, ensure_ascii=False),
+        "chunks": [
+            (item["id"], index, title, chunk, created_at, last_updated, author, space, url)
+            for index, chunk in enumerate(split_chunks(text))
+        ],
+    }
+
+
+def upsert_page_records(conn: sqlite3.Connection, records: list[dict[str, object]]) -> None:
+    if not records:
+        return
+    conn.executemany(
         """
         INSERT INTO pages(page_id, title, text, created_at, last_updated, author, space, url, raw_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -499,19 +519,25 @@ def upsert_page(conn: sqlite3.Connection, config: Config, item: dict) -> None:
             url=excluded.url,
             raw_json=excluded.raw_json
         """,
-        (
-            item["id"],
-            title,
-            text,
-            created_at,
-            last_updated,
-            author,
-            space,
-            url,
-            json.dumps(item, ensure_ascii=False),
-        ),
+        [
+            (
+                record["page_id"],
+                record["title"],
+                record["text"],
+                record["created_at"],
+                record["last_updated"],
+                record["author"],
+                record["space"],
+                record["url"],
+                record["raw_json"],
+            )
+            for record in records
+        ],
     )
-    conn.execute("DELETE FROM page_chunks WHERE page_id = ?", (item["id"],))
+    page_ids = [str(record["page_id"]) for record in records]
+    placeholders = ", ".join("?" for _ in page_ids)
+    conn.execute(f"DELETE FROM page_chunks WHERE page_id IN ({placeholders})", page_ids)
+    chunk_rows = [chunk for record in records for chunk in record["chunks"]]
     conn.executemany(
         """
         INSERT INTO page_chunks(
@@ -519,11 +545,12 @@ def upsert_page(conn: sqlite3.Connection, config: Config, item: dict) -> None:
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        [
-            (item["id"], index, title, chunk, created_at, last_updated, author, space, url)
-            for index, chunk in enumerate(split_chunks(text))
-        ],
+        chunk_rows,
     )
+
+
+def upsert_page(conn: sqlite3.Connection, config: Config, item: dict) -> None:
+    upsert_page_records(conn, [page_record(config, item)])
 
 
 def upsert_stored_page(conn: sqlite3.Connection, item: dict) -> None:
@@ -643,8 +670,7 @@ def ingest_batch(batch_size: int = 100, reset: bool = False) -> dict[str, object
 
             current_limit = min(100, batch_size - processed)
             results = fetch_page_batch(config, row["space"], int(row["next_start"]), current_limit)
-            for item in results:
-                upsert_page(conn, config, item)
+            upsert_page_records(conn, [page_record(config, item) for item in results])
             processed += len(results)
             touched_spaces.append(row["space"])
 
