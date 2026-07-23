@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
@@ -45,6 +46,19 @@ LAST_STATS = {
     "ingest": INGEST_STATE.copy(),
     "stale": True,
 }
+
+
+def database_url_info() -> dict[str, object]:
+    database_url = os.getenv("DATABASE_URL", "")
+    parsed = urlparse(database_url) if database_url else None
+    host = parsed.hostname if parsed else None
+    looks_internal = bool(host and host.startswith("dpg-") and host.endswith("-a"))
+    return {
+        "database_url_set": bool(database_url),
+        "database_url_is_postgres": database_url.startswith(("postgres://", "postgresql://")),
+        "database_url_host": host,
+        "database_url_looks_internal": looks_internal,
+    }
 
 
 @app.after_request
@@ -566,15 +580,14 @@ def admin_config():
         official_spaces = []
         space_weights = {}
         document_type_weights = {}
-    database_url = os.getenv("DATABASE_URL", "")
+    db_info = database_url_info()
     return jsonify(
         {
             "admin_token_required": bool(os.getenv("ADMIN_TOKEN", "")),
             "database_connection_error": None,
             "database_connection_ok": None,
             "database_connection_checked": False,
-            "database_url_set": bool(database_url),
-            "database_url_is_postgres": database_url.startswith(("postgres://", "postgresql://")),
+            **db_info,
             "document_type_weights": document_type_weights,
             "error": config_error,
             "official_spaces": official_spaces,
@@ -593,6 +606,7 @@ def admin_diagnostics():
     try:
         init_history_table()
         conn = connect_db()
+        db_info = database_url_info()
         progress = ingest_progress_status(conn)
         payload = {
             "status": "ok",
@@ -608,7 +622,7 @@ def admin_diagnostics():
                 "api_token_set": bool(config.api_token),
                 "space_key": config.space_key,
                 "admin_token_required": bool(os.getenv("ADMIN_TOKEN", "")),
-                "database_url_set": bool(os.getenv("DATABASE_URL", "")),
+                **db_info,
             },
             "persistence": {
                 "uses_persistent_database": getattr(conn, "is_postgres", False),
@@ -633,7 +647,7 @@ def admin_diagnostics():
         return jsonify(payload)
     except Exception as error:
         logger.exception("Diagnostics failed")
-        database_url = os.getenv("DATABASE_URL", "")
+        db_info = database_url_info()
         config_error = None
         try:
             config = load_config()
@@ -643,7 +657,7 @@ def admin_diagnostics():
                 "api_token_set": bool(config.api_token),
                 "space_key": config.space_key,
                 "admin_token_required": bool(os.getenv("ADMIN_TOKEN", "")),
-                "database_url_set": bool(database_url),
+                **db_info,
             }
         except Exception as load_error:
             config_error = str(load_error)
@@ -653,13 +667,13 @@ def admin_diagnostics():
                 "api_token_set": False,
                 "space_key": None,
                 "admin_token_required": bool(os.getenv("ADMIN_TOKEN", "")),
-                "database_url_set": bool(database_url),
+                **db_info,
             }
         return jsonify(
             {
                 "status": "error",
                 "database": "postgres"
-                if database_url.startswith(("postgres://", "postgresql://"))
+                if db_info["database_url_is_postgres"]
                 else "sqlite",
                 "error": str(error),
                 "config_error": config_error,

@@ -365,9 +365,11 @@ function renderDiagnostics(payload) {
   const configLabel = missing.length ? `누락 ${missing.join(", ")}` : "필수 설정 정상";
   const persistence = payload.persistence?.uses_persistent_database ? "영구 DB" : "임시 DB";
   const errorPrefix = payload.status === "error" && payload.error ? `오류 ${payload.error} · ` : "";
+  const dbHost = config.database_url_host ? ` · host ${config.database_url_host}` : "";
+  const dbUrlHint = config.database_url_looks_internal ? " · Internal URL 의심" : "";
   renderOpsStatus(
     `${errorPrefix}점검 ${payload.status} · DB ${payload.database} · 문서 ${counts.pages ?? 0} · chunk ${counts.chunks ?? 0} · ` +
-    `${configLabel} · ${persistence} · 스페이스 ${progress.completed_spaces ?? 0}/${progress.total_spaces ?? 0}`
+    `${configLabel} · ${persistence}${dbHost}${dbUrlHint} · 스페이스 ${progress.completed_spaces ?? 0}/${progress.total_spaces ?? 0}`
   );
   renderIngestProgress(progress);
 }
