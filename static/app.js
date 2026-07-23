@@ -652,6 +652,10 @@ function renderSearchMeta(meta) {
     .slice(0, 4)
     .map((note) => `<li>${escapeText(note)}</li>`)
     .join("");
+  const rankerFeatures = (meta.ranker_features || [])
+    .slice(0, 5)
+    .map((feature) => `<span>${escapeText(feature)}</span>`)
+    .join("");
   const actions = recommendedSearchActions(meta);
   searchMetaPanel.innerHTML = `
     <div><strong>${escapeText(meta.confidence || "-")}</strong><span>신뢰도</span></div>
@@ -664,6 +668,7 @@ function renderSearchMeta(meta) {
     <div class="search-meta-wide"><strong>${docTypes}</strong><span>문서 유형</span></div>
     <div><strong>${escapeText(formatDate(meta.latest_updated))}</strong><span>최신 근거</span></div>
     <div class="search-meta-keywords">${keywords || "<span>-</span>"}</div>
+    <div class="search-meta-keywords search-ranker-features">${rankerFeatures || "<span>-</span>"}</div>
     <div class="search-quality-notes">
       <strong>검색 품질 노트</strong>
       <ul>${qualityNotes || "<li>품질 진단 정보가 없습니다.</li>"}</ul>
@@ -727,7 +732,7 @@ function modeLabel(mode) {
 }
 
 function rankerLabel(ranker) {
-  return { contextual: "문맥", keyword: "키워드" }[ranker] || ranker;
+  return { contextual: "문맥", keyword: "키워드", "hybrid-bm25-context": "BM25+문맥" }[ranker] || ranker;
 }
 
 async function loadStats() {

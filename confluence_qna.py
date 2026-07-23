@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import os
 import re
 import sqlite3
@@ -1030,6 +1031,8 @@ def context_score(
 ) -> tuple[float, list[str]]:
     title = compact_text(row["title"])
     text = compact_text(row["text"])
+    title_no_space = nospace_text(row["title"])
+    text_no_space = nospace_text(row["text"])
     document_type = classify_document(row["title"], row["text"])
     query_semantic = semantic_tokens(query)
     title_semantic = semantic_tokens(row["title"])
@@ -1073,6 +1076,12 @@ def context_score(
             matched.append(phrase)
         elif phrase in text:
             score += 3.0
+            matched.append(phrase)
+        elif nospace_text(phrase) in title_no_space:
+            score += 6.0
+            matched.append(phrase)
+        elif nospace_text(phrase) in text_no_space:
+            score += 2.5
             matched.append(phrase)
     if semantic_overlap < 0.08 and title_overlap < 0.08:
         score -= 12.0
@@ -1119,7 +1128,10 @@ def extract_terms(question: str) -> list[str]:
             if domain_term in token:
                 expanded.append(domain_term)
         if re.search(r"[가-힣]", token) and len(token) >= 5:
-            expanded.extend(token[i : i + 3] for i in range(0, len(token) - 2))
+            expanded.extend(char_ngrams(token))
+    compact_question = nospace_text(question)
+    if re.search(r"[가-힣]", compact_question) and len(compact_question) >= 5:
+        expanded.extend(char_ngrams(compact_question))
     for trigger, synonyms in INTENT_KEYWORDS.items():
         if trigger in question:
             expanded.extend(synonyms)
@@ -1140,6 +1152,11 @@ def essential_terms(question: str) -> list[str]:
 
 def row_to_hit(row: sqlite3.Row, score: float, matched_terms: Iterable[str]) -> SearchHit:
     document_type = classify_document(row["title"], row["text"])
+    visible_terms = [
+        term
+        for term in ordered_unique(matched_terms)
+        if len(term) >= 3 or term in DOMAIN_TERMS
+    ]
     return SearchHit(
         page_id=row["page_id"],
         chunk_index=row["chunk_index"],
@@ -1152,12 +1169,26 @@ def row_to_hit(row: sqlite3.Row, score: float, matched_terms: Iterable[str]) -> 
         url=row["url"],
         score=score,
         document_type=document_type,
-        matched_terms=tuple(ordered_unique(matched_terms)),
+        matched_terms=tuple(visible_terms),
     )
 
 
 def compact_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().lower()
+
+
+def nospace_text(value: str) -> str:
+    return re.sub(r"\s+", "", compact_text(value))
+
+
+def char_ngrams(value: str, sizes: tuple[int, ...] = (2, 3, 4)) -> list[str]:
+    compact = nospace_text(value)
+    grams = []
+    for size in sizes:
+        if len(compact) < size:
+            continue
+        grams.extend(compact[index : index + size] for index in range(len(compact) - size + 1))
+    return ordered_unique(grams)
 
 
 def phrase_candidates(question: str) -> list[str]:
@@ -1166,6 +1197,9 @@ def phrase_candidates(question: str) -> list[str]:
     normalized = compact_text(question)
     if len(normalized) >= 4:
         phrases.append(normalized)
+    no_space = nospace_text(question)
+    if len(no_space) >= 4 and no_space != normalized:
+        phrases.append(no_space)
     phrases.extend(" ".join(tokens[index : index + 2]) for index in range(len(tokens) - 1))
     phrases.extend(token for token in tokens if len(token) >= 4)
     return ordered_unique(phrases)
@@ -1185,6 +1219,34 @@ def proximity_bonus(text: str, essentials: list[str]) -> float:
     return 0.0
 
 
+def bm25_lite_score(title: str, text: str, terms: list[str], essentials: list[str]) -> tuple[float, list[str]]:
+    title_text = compact_text(title)
+    body_text = compact_text(text)
+    title_no_space = nospace_text(title)
+    body_no_space = nospace_text(text)
+    doc_len = max(len(question_tokens(body_text)) + len(body_text) / 120, 1.0)
+    avg_len = 220.0
+    k1 = 1.2
+    b = 0.72
+    score = 0.0
+    matched = []
+    for term in ordered_unique(terms):
+        if len(term) < 2:
+            continue
+        term_no_space = nospace_text(term)
+        title_tf = title_text.count(term) + title_no_space.count(term_no_space)
+        body_tf = body_text.count(term) + body_no_space.count(term_no_space)
+        tf = title_tf * 3.0 + body_tf
+        if tf <= 0:
+            continue
+        matched.append(term)
+        idf = 1.0 + math.log1p(12.0 / max(1.0, len(term)))
+        saturation = (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * doc_len / avg_len))
+        weight = 1.8 if term in essentials else 1.0
+        score += idf * saturation * weight
+    return score, matched
+
+
 def term_score(
     row: sqlite3.Row,
     query: str,
@@ -1198,6 +1260,9 @@ def term_score(
     matched = []
     score = recency_boost(row["last_updated"])
     document_type = classify_document(row["title"], row["text"])
+    bm25_score, bm25_matched = bm25_lite_score(row["title"], row["text"], terms, essentials)
+    score += bm25_score * 2.8
+    matched.extend(bm25_matched)
     for term in terms:
         title_count = title.count(term)
         text_count = text.count(term)
@@ -1256,6 +1321,12 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
         for term in ordered_unique([*essentials, *terms, *question_tokens(query)])
         if len(term) >= 2
     ][:candidate_limit]
+    phrase_terms = [
+        nospace_text(phrase)
+        for phrase in phrase_candidates(query)
+        if len(nospace_text(phrase)) >= 4
+    ][:2 if uses_postgres else 5]
+    candidate_terms = ordered_unique([*candidate_terms, *phrase_terms])[: candidate_limit + len(phrase_terms)]
     max_candidates = max(limit * (8 if uses_postgres else 16), 32 if uses_postgres else 48)
     for term in candidate_terms:
         like_clauses.append("(LOWER(title) LIKE ? OR LOWER(text) LIKE ?)")
@@ -1404,7 +1475,14 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
         "stale_count": stale_count,
         "coverage_ratio": coverage_ratio,
         "latest_updated": max((hit.last_updated for hit in page_hits), default=""),
-        "ranker": "contextual",
+        "ranker": "hybrid-bm25-context",
+        "ranker_features": [
+            "BM25-lite 길이 보정",
+            "문맥 overlap",
+            "띄어쓰기 무시 phrase",
+            "2-4글자 n-gram",
+            "문서 유형/스페이스 가중치",
+        ],
         "quality_notes": search_quality_notes(page_hits, official_count, stale_count, coverage_ratio),
         "doc_type_counts": {
             doc_type: sum(1 for hit in page_hits if hit.document_type == doc_type)
