@@ -6,7 +6,7 @@
     <title>Confluence Knowledge QNA</title>
     <link rel="icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260723-7') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260723-8') }}" />
   </head>
   <body>
     <div class="app-shell">
@@ -62,7 +62,7 @@
         <section class="query-panel">
           <div class="query-head">
             <p class="eyebrow">Knowledge desk</p>
-            <h2>Confluence 문서에서 정책 근거와 리스크 후보를 빠르게 찾습니다.</h2>
+            <h2>정책 근거와 리스크 후보를 빠르게 찾습니다.</h2>
           </div>
           <form id="askForm" class="ask-form">
             <textarea id="questionInput" rows="3" placeholder="예: 현재 환불 정책 프로세스가 정상인가요?"></textarea>
@@ -97,6 +97,7 @@
             <div id="answerToc" class="answer-toc"></div>
             <div id="searchMetaPanel" class="search-meta-panel"></div>
             <div id="answerOutput" class="answer-output">왼쪽 히스토리를 선택하거나 새 질문을 입력하세요.</div>
+            <div id="inlineEvidenceList" class="inline-evidence-list"></div>
           </article>
 
           <section class="source-panel">
@@ -118,6 +119,6 @@
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js', v='20260723-7') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260723-8') }}"></script>
   </body>
 </html>

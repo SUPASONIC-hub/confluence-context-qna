@@ -11,6 +11,7 @@ const sourceSort = document.querySelector("#sourceSort");
 const resultMeta = document.querySelector("#resultMeta");
 const answerToc = document.querySelector("#answerToc");
 const searchMetaPanel = document.querySelector("#searchMetaPanel");
+const inlineEvidenceList = document.querySelector("#inlineEvidenceList");
 const stats = document.querySelector("#stats");
 const sourceFilters = document.querySelector("#sourceFilters");
 const quickPrompts = document.querySelector("#quickPrompts");
@@ -303,7 +304,17 @@ function renderSources(hits = currentHits) {
     return;
   }
   sourceList.innerHTML = visibleGroups.map((group) => `
-    <article class="source-card source-card-group">
+    ${renderEvidenceGroup(group)}
+  `).join("");
+}
+
+function renderEvidenceGroup(group, { compact = false } = {}) {
+  const chunks = compact ? group.chunks.slice(0, 2) : group.chunks;
+  const moreLabel = compact && group.chunks.length > chunks.length
+    ? `<div class="chunk-more">추가 근거 ${group.chunks.length - chunks.length}개는 아래 근거 문서 목록에서 확인</div>`
+    : "";
+  return `
+    <article class="source-card source-card-group ${compact ? "inline-evidence-card" : ""}">
       <div class="source-card-head">
         <a href="${escapeText(group.url)}" target="_blank" rel="noreferrer">${escapeText(group.title)}</a>
         <span>${escapeText(group.document_type)}</span>
@@ -311,15 +322,32 @@ function renderSources(hits = currentHits) {
       <div class="source-meta">${escapeText(group.space)} · 근거 chunk ${group.chunks.length}개 · 등록 ${formatDate(group.created_at)} · 수정 ${formatDate(group.last_updated)} · 최고 score ${Number(group.score || 0).toFixed(2)}</div>
       <div class="term-chips">${group.matched_terms.slice(0, 10).map((term) => `<span>${escapeText(term)}</span>`).join("") || "<span>-</span>"}</div>
       <div class="chunk-list">
-        ${group.chunks.map((hit) => `
+        ${chunks.map((hit) => `
           <section class="chunk-match">
             <div class="chunk-meta">chunk ${hit.chunk_index ?? 0} · score ${hit.score}</div>
             <p>${highlightTerms(hit.excerpt, hit.matched_terms || [])}</p>
           </section>
         `).join("")}
+        ${moreLabel}
       </div>
     </article>
-  `).join("");
+  `;
+}
+
+function renderInlineEvidence(hits = currentHits) {
+  if (!inlineEvidenceList) return;
+  const groups = groupHitsByPage(sortedHits(hits)).slice(0, 6);
+  if (!groups.length) {
+    inlineEvidenceList.innerHTML = "";
+    return;
+  }
+  inlineEvidenceList.innerHTML = `
+    <div class="inline-evidence-head">
+      <h4>검색 근거 매칭 문서</h4>
+      <span>답변에 사용된 상위 문서 ${groups.length}개</span>
+    </div>
+    ${groups.map((group) => renderEvidenceGroup(group, { compact: true })).join("")}
+  `;
 }
 
 function highlightTerms(value, terms) {
@@ -360,6 +388,7 @@ function renderResult(payload) {
     copyAnswerButton.disabled = !currentAnswer;
   }
   renderSearchMeta(meta);
+  renderInlineEvidence(currentHits);
   renderSources(currentHits);
 }
 
