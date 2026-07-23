@@ -645,7 +645,53 @@ def admin_diagnostics():
         return jsonify(payload)
     except Exception as error:
         logger.exception("Diagnostics failed")
-        return jsonify(error_payload(error)), 500
+        database_url = os.getenv("DATABASE_URL", "")
+        config_error = None
+        try:
+            config = load_config()
+            config_payload = {
+                "base_url_set": bool(config.base_url),
+                "email_set": bool(config.email),
+                "api_token_set": bool(config.api_token),
+                "space_key": config.space_key,
+                "admin_token_required": bool(os.getenv("ADMIN_TOKEN", "")),
+                "database_url_set": bool(database_url),
+            }
+        except Exception as load_error:
+            config_error = str(load_error)
+            config_payload = {
+                "base_url_set": False,
+                "email_set": False,
+                "api_token_set": False,
+                "space_key": None,
+                "admin_token_required": bool(os.getenv("ADMIN_TOKEN", "")),
+                "database_url_set": bool(database_url),
+            }
+        return jsonify(
+            {
+                "status": "error",
+                "database": "postgres"
+                if database_url.startswith(("postgres://", "postgresql://"))
+                else "sqlite",
+                "error": str(error),
+                "config_error": config_error,
+                "counts": {"pages": 0, "chunks": 0, "history": 0},
+                "config": config_payload,
+                "persistence": {
+                    "uses_persistent_database": False,
+                    "warning": f"DB 연결 실패: {error}",
+                },
+                "ingest_progress": {
+                    "total_spaces": 0,
+                    "completed_spaces": 0,
+                    "indexed_offsets": 0,
+                    "remaining": 0,
+                    "active_space": None,
+                    "completed": False,
+                    "spaces": [],
+                },
+            }
+        )
     finally:
         if conn is not None:
             conn.close()

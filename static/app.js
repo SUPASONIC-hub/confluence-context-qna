@@ -364,8 +364,9 @@ function renderDiagnostics(payload) {
   ].filter((item) => !item[1]).map((item) => item[0]);
   const configLabel = missing.length ? `누락 ${missing.join(", ")}` : "필수 설정 정상";
   const persistence = payload.persistence?.uses_persistent_database ? "영구 DB" : "임시 DB";
+  const errorPrefix = payload.status === "error" && payload.error ? `오류 ${payload.error} · ` : "";
   renderOpsStatus(
-    `점검 ${payload.status} · DB ${payload.database} · 문서 ${counts.pages ?? 0} · chunk ${counts.chunks ?? 0} · ` +
+    `${errorPrefix}점검 ${payload.status} · DB ${payload.database} · 문서 ${counts.pages ?? 0} · chunk ${counts.chunks ?? 0} · ` +
     `${configLabel} · ${persistence} · 스페이스 ${progress.completed_spaces ?? 0}/${progress.total_spaces ?? 0}`
   );
   renderIngestProgress(progress);
