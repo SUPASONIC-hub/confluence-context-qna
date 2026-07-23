@@ -618,6 +618,28 @@ button[type="submit"]:disabled {
   grid-column: span 2;
 }
 
+.search-quality-notes {
+  grid-column: 1 / -1;
+}
+
+.search-quality-notes strong {
+  margin-bottom: 6px;
+}
+
+.search-quality-notes ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.search-quality-notes li {
+  overflow-wrap: anywhere;
+}
+
 .search-meta-keywords {
   display: flex;
   flex-wrap: wrap;
@@ -991,6 +1013,7 @@ mark {
   }
 
   .search-meta-panel .search-meta-wide,
+  .search-quality-notes,
   .search-meta-keywords {
     grid-column: auto;
   }

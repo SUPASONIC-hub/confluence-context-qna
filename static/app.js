@@ -402,12 +402,26 @@ function renderSearchMeta(meta) {
     .map(([type, count]) => `${escapeText(type)} ${count}`)
     .join(" · ") || "-";
   const keywords = (meta.keywords || []).slice(0, 8).map((term) => `<span>${escapeText(term)}</span>`).join("");
+  const coverage = Number(meta.coverage_ratio ?? 0);
+  const coverageLabel = `${Math.round(coverage * 100)}%`;
+  const qualityNotes = (meta.quality_notes || [])
+    .slice(0, 4)
+    .map((note) => `<li>${escapeText(note)}</li>`)
+    .join("");
   searchMetaPanel.innerHTML = `
     <div><strong>${escapeText(meta.confidence || "-")}</strong><span>신뢰도</span></div>
     <div><strong>${escapeText(modeLabel(meta.mode || "balanced"))}</strong><span>검색 모드</span></div>
     <div><strong>${escapeText(String(meta.top_score ?? 0))}</strong><span>top score</span></div>
+    <div><strong>${escapeText(coverageLabel)}</strong><span>핵심어 매칭</span></div>
+    <div><strong>${escapeText(String(meta.official_count ?? 0))}</strong><span>공식 근거</span></div>
+    <div><strong>${escapeText(String(meta.stale_count ?? 0))}</strong><span>오래된 후보</span></div>
     <div class="search-meta-wide"><strong>${docTypes}</strong><span>문서 유형</span></div>
+    <div><strong>${escapeText(formatDate(meta.latest_updated))}</strong><span>최신 근거</span></div>
     <div class="search-meta-keywords">${keywords || "<span>-</span>"}</div>
+    <div class="search-quality-notes">
+      <strong>검색 품질 노트</strong>
+      <ul>${qualityNotes || "<li>품질 진단 정보가 없습니다.</li>"}</ul>
+    </div>
   `;
 }
 

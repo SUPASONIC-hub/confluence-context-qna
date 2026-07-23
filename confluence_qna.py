@@ -1016,6 +1016,20 @@ def phrase_candidates(question: str) -> list[str]:
     return ordered_unique(phrases)
 
 
+def proximity_bonus(text: str, essentials: list[str]) -> float:
+    positions = [text.find(term) for term in essentials[:8] if term and text.find(term) >= 0]
+    if len(positions) < 2:
+        return 0.0
+    spread = max(positions) - min(positions)
+    if spread <= 120:
+        return 7.0
+    if spread <= 260:
+        return 4.0
+    if spread <= 520:
+        return 2.0
+    return 0.0
+
+
 def term_score(
     row: sqlite3.Row,
     query: str,
@@ -1042,6 +1056,8 @@ def term_score(
             score += 12.0
         elif phrase in text:
             score += 4.0
+    score += proximity_bonus(title, essentials) * 1.6
+    score += proximity_bonus(text, essentials)
     if terms:
         coverage = len(set(matched)) / max(len(set(terms[:12])), 1)
         score += coverage * 8.0
@@ -1193,19 +1209,56 @@ def merged_hits(conn: sqlite3.Connection, question: str, mode: str = "balanced")
 
 def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") -> dict[str, object]:
     page_hits = unique_page_hits(hits)
+    keywords = essential_terms(question)[:10] or extract_terms(question)[:10]
+    official_count = sum(1 for hit in page_hits if hit.document_type in {"정책", "매뉴얼", "결정사항"})
+    stale_count = sum(1 for hit in page_hits if recency_boost(hit.last_updated) < 0)
+    matched_keywords = {
+        term
+        for hit in hits
+        for term in hit.matched_terms
+        if term in keywords
+    }
+    coverage_ratio = round(len(matched_keywords) / max(len(keywords), 1), 2) if keywords else 0
     return {
         "mode": mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced",
         "confidence": confidence_label(page_hits),
-        "keywords": essential_terms(question)[:10] or extract_terms(question)[:10],
+        "keywords": keywords,
         "preferred_doc_types": sorted(question_intents(question)),
         "page_count": len(page_hits),
         "chunk_count": len(hits),
         "top_score": round(page_hits[0].score, 2) if page_hits else 0,
+        "official_count": official_count,
+        "stale_count": stale_count,
+        "coverage_ratio": coverage_ratio,
+        "latest_updated": max((hit.last_updated for hit in page_hits), default=""),
+        "quality_notes": search_quality_notes(page_hits, official_count, stale_count, coverage_ratio),
         "doc_type_counts": {
             doc_type: sum(1 for hit in page_hits if hit.document_type == doc_type)
             for doc_type in sorted({hit.document_type for hit in page_hits})
         },
     }
+
+
+def search_quality_notes(
+    page_hits: list[SearchHit],
+    official_count: int,
+    stale_count: int,
+    coverage_ratio: float,
+) -> list[str]:
+    notes = []
+    if not page_hits:
+        return ["검색 결과가 없습니다. 수집 범위 또는 질문 키워드를 넓혀야 합니다."]
+    if len(page_hits) < 3:
+        notes.append("후보 문서가 적습니다. 같은 주제의 다른 표현으로도 재질문하는 것이 좋습니다.")
+    if official_count == 0:
+        notes.append("정책/매뉴얼/결정사항 문서가 검색되지 않아 최종 근거로 쓰기 어렵습니다.")
+    if coverage_ratio < 0.45:
+        notes.append("질문 핵심어 일부만 근거에 매칭되었습니다. 질문을 더 구체화하거나 넓게 모드를 사용하세요.")
+    if stale_count >= max(2, len(page_hits) // 2):
+        notes.append("오래된 문서 비중이 높습니다. 최신순 정렬로 최근 변경 문서를 먼저 확인하세요.")
+    if not notes:
+        notes.append("핵심어, 공식 문서, 최신성 기준에서 우선 검토 가능한 검색 결과입니다.")
+    return notes[:4]
 
 
 def excerpt(text: str, size: int = 700) -> str:
