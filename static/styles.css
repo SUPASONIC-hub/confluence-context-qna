@@ -932,6 +932,23 @@ button[type="submit"]:disabled {
   line-height: 1.45;
 }
 
+.match-diagnostics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.match-diagnostics span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #eef9fc;
+  color: var(--blue-deep);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .source-jump,
 .source-toggle {
   min-height: 30px;

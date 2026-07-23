@@ -312,10 +312,16 @@ function groupHitsByPage(hits) {
       last_updated: hit.last_updated,
       created_at: hit.created_at,
       score: hit.score,
+      keyword_coverage: Number(hit.keyword_coverage || 0),
+      match_reasons: new Set(),
       matched_terms: new Set(),
       chunks: [],
     };
     group.score = Math.max(Number(group.score || 0), Number(hit.score || 0));
+    group.keyword_coverage = Math.max(Number(group.keyword_coverage || 0), Number(hit.keyword_coverage || 0));
+    if (hit.match_reason) {
+      group.match_reasons.add(hit.match_reason);
+    }
     if (String(hit.last_updated || "") > String(group.last_updated || "")) {
       group.last_updated = hit.last_updated;
     }
@@ -327,6 +333,7 @@ function groupHitsByPage(hits) {
   }
   return [...groups.values()].map((group) => ({
     ...group,
+    match_reasons: [...group.match_reasons],
     matched_terms: [...group.matched_terms],
     chunks: sortedHits(group.chunks),
   }));
@@ -383,6 +390,8 @@ function renderEvidenceGroup(group, { compact = false, withAnchor = false } = {}
   const detailButton = compact
     ? `<button class="source-jump" type="button" data-source-page="${escapeText(anchorId)}">상세 근거 보기</button>`
     : "";
+  const coverageLabel = `${Math.round(Number(group.keyword_coverage || 0) * 100)}%`;
+  const reasonLabel = group.match_reasons?.[0] || "문맥 유사 후보";
   return `
     <article class="source-card source-card-group ${compact ? "inline-evidence-card" : ""}" ${withAnchor ? `id="${escapeText(anchorId)}"` : ""}>
       <div class="source-card-head">
@@ -390,6 +399,10 @@ function renderEvidenceGroup(group, { compact = false, withAnchor = false } = {}
         <span>${escapeText(group.document_type)}</span>
       </div>
       <div class="source-meta">${escapeText(group.space)} · 근거 chunk ${group.chunks.length}개 · 등록 ${formatDate(group.created_at)} · 수정 ${formatDate(group.last_updated)} · 최고 score ${Number(group.score || 0).toFixed(2)}</div>
+      <div class="match-diagnostics">
+        <span>핵심어 ${escapeText(coverageLabel)}</span>
+        <span>${escapeText(reasonLabel)}</span>
+      </div>
       <div class="term-chips">${group.matched_terms.slice(0, 10).map((term) => `<span>${escapeText(term)}</span>`).join("") || "<span>-</span>"}</div>
       ${detailButton}
       ${toggleButton}

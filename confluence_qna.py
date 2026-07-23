@@ -8,6 +8,7 @@ import re
 import sqlite3
 import sys
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
@@ -924,48 +925,66 @@ def question_tokens(text: str) -> list[str]:
     )
 
 
-def semantic_tokens(text: str) -> list[str]:
+@lru_cache(maxsize=4096)
+def semantic_tokens(text: str) -> tuple[str, ...]:
     base_tokens = question_tokens(text)
     grams: list[str] = []
     for token in base_tokens:
         if re.search(r"[가-힣]", token) and len(token) >= 4:
             grams.extend(token[index : index + 2] for index in range(len(token) - 1))
             grams.extend(token[index : index + 3] for index in range(len(token) - 2))
-    return ordered_unique([*base_tokens, *grams])
+    return tuple(ordered_unique([*base_tokens, *grams]))
 
 
-def sentence_units(text: str) -> list[str]:
+@lru_cache(maxsize=4096)
+def sentence_units(text: str) -> tuple[str, ...]:
     compact = " ".join(str(text or "").split())
-    return [
+    return tuple(
         sentence.strip()
         for sentence in re.split(r"(?<=[.!?。！？])\s+|(?<=다\.)\s+|(?<=요\.)\s+", compact)
         if sentence.strip()
-    ]
+    )
 
 
-def weighted_token_overlap(query_tokens: list[str], doc_tokens: list[str]) -> float:
-    if not query_tokens or not doc_tokens:
+def weighted_token_overlap(query_tokens: Iterable[str], doc_tokens: Iterable[str]) -> float:
+    query_token_list = list(query_tokens)
+    doc_token_list = list(doc_tokens)
+    if not query_token_list or not doc_token_list:
         return 0.0
     doc_counts: dict[str, int] = {}
-    for token in doc_tokens:
+    for token in doc_token_list:
         doc_counts[token] = doc_counts.get(token, 0) + 1
     score = 0.0
-    for token in query_tokens:
+    for token in query_token_list:
         if token not in doc_counts:
             continue
         length_weight = 1.0 + min(len(token), 8) / 8
         rarity_weight = 1.0 / (1.0 + min(doc_counts[token] - 1, 6) * 0.18)
         score += length_weight * rarity_weight
-    return score / max(len(query_tokens), 1)
+    return score / max(len(query_token_list), 1)
 
 
 def best_sentence_overlap(query_tokens: list[str], text: str) -> float:
     best = 0.0
-    for sentence in sentence_units(text)[:24]:
+    for sentence in sentence_units(text)[:14]:
         score = weighted_token_overlap(query_tokens, semantic_tokens(sentence))
         if score > best:
             best = score
     return best
+
+
+def adjacent_pair_hits(tokens: list[str], text: str) -> int:
+    if len(tokens) < 2:
+        return 0
+    compact = text
+    hits = 0
+    for left, right in zip(tokens, tokens[1:]):
+        if left in compact and right in compact:
+            left_pos = compact.find(left)
+            right_pos = compact.find(right)
+            if left_pos >= 0 and right_pos >= 0 and abs(left_pos - right_pos) <= 160:
+                hits += 1
+    return hits
 
 
 def context_score(
@@ -990,10 +1009,13 @@ def context_score(
     semantic_overlap = weighted_token_overlap(query_semantic, text_semantic)
     title_overlap = weighted_token_overlap(query_semantic, title_semantic)
     sentence_overlap = best_sentence_overlap(query_semantic, row["text"])
+    query_core = essentials[:8] or question_tokens(query)[:8]
+    phrase_hits = adjacent_pair_hits(query_core, title) * 2 + adjacent_pair_hits(query_core, text)
     score = recency_boost(row["last_updated"])
     score += semantic_overlap * 30.0
     score += title_overlap * 24.0
     score += sentence_overlap * 28.0
+    score += min(phrase_hits, 6) * 4.0
     score += proximity_bonus(title, essentials) * 1.8
     score += proximity_bonus(text, essentials) * 1.2
     matched_essentials = [term for term in essentials if term in title or term in text]
@@ -1199,7 +1221,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
         for term in ordered_unique([*essentials, *terms, *question_tokens(query)])
         if len(term) >= 2
     ][:18]
-    max_candidates = max(limit * 24, 72)
+    max_candidates = max(limit * 16, 48)
     for term in candidate_terms:
         like_clauses.append("(LOWER(title) LIKE ? OR LOWER(text) LIKE ?)")
         like = f"%{term}%"

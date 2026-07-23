@@ -281,7 +281,32 @@ def run_ingest_job(limit: int | None) -> None:
             )
 
 
-def serialize_hits(hits) -> list[dict[str, object]]:
+def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
+    from confluence_qna import essential_terms
+
+    keywords = essential_terms(question)[:10]
+    matched = set(hit.matched_terms)
+    covered = [term for term in keywords if term in matched]
+    coverage = round(len(covered) / max(len(keywords), 1), 2) if keywords else 0
+    reasons = []
+    if coverage >= 0.75:
+        reasons.append("핵심어 대부분 매칭")
+    elif coverage >= 0.4:
+        reasons.append("핵심어 일부 매칭")
+    if hit.document_type in {"정책", "매뉴얼", "결정사항"}:
+        reasons.append("공식 근거 유형")
+    if any(term in hit.title for term in covered):
+        reasons.append("제목 매칭")
+    if not reasons:
+        reasons.append("문맥 유사 후보")
+    return {
+        "keyword_coverage": coverage,
+        "covered_keywords": covered,
+        "match_reason": " · ".join(reasons[:3]),
+    }
+
+
+def serialize_hits(hits, question: str = "") -> list[dict[str, object]]:
     return [
         {
             "page_id": hit.page_id,
@@ -296,6 +321,7 @@ def serialize_hits(hits) -> list[dict[str, object]]:
             "matched_terms": list(hit.matched_terms),
             "chunk_index": hit.chunk_index,
             "excerpt": focused_excerpt(hit.text, list(hit.matched_terms)),
+            **hit_match_diagnostics(hit, question),
         }
         for hit in hits
     ]
@@ -394,7 +420,7 @@ def ask_api():
     try:
         hits = merged_hits(conn, question, search_mode)
         answer, answer_mode = generate_answer(question, hits)
-        serialized = serialize_hits(hits)
+        serialized = serialize_hits(hits, question)
         meta = search_meta(question, hits, search_mode)
         created_at = datetime.now(timezone.utc).isoformat()
         if getattr(conn, "is_postgres", False):
