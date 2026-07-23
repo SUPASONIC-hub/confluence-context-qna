@@ -34,6 +34,9 @@ const ingestProgressBar = document.querySelector("#ingestProgressBar");
 const ingestProgressDetail = document.querySelector("#ingestProgressDetail");
 
 const BATCH_SIZE = 80;
+const CLIENT_DB_NAME = "confluence-qna-client-backup";
+const CLIENT_DB_VERSION = 1;
+const CLIENT_STORE = "keyval";
 let activeHistoryId = null;
 let allHistoryItems = [];
 let currentHits = [];
@@ -44,11 +47,102 @@ let activeSourceSort = "score";
 let activeSourceKeyword = "";
 let expandedSourcePages = new Set();
 let adminToken = localStorage.getItem("adminToken") || "";
+let adminTokenRequired = false;
 let batchRunning = false;
 let stopBatchRequested = false;
+let autoRestoreAttempted = false;
 
 function apiUrl(path) {
   return new URL(path, window.location.origin).toString();
+}
+
+function openClientDb() {
+  return new Promise((resolve, reject) => {
+    if (!("indexedDB" in window)) {
+      reject(new Error("IndexedDB를 사용할 수 없습니다."));
+      return;
+    }
+    const request = indexedDB.open(CLIENT_DB_NAME, CLIENT_DB_VERSION);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(CLIENT_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("IndexedDB 열기 실패"));
+  });
+}
+
+async function clientDbSet(key, value) {
+  const db = await openClientDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CLIENT_STORE, "readwrite");
+    tx.objectStore(CLIENT_STORE).put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error("브라우저 백업 저장 실패"));
+  }).finally(() => db.close());
+}
+
+async function clientDbGet(key) {
+  const db = await openClientDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CLIENT_STORE, "readonly");
+    const request = tx.objectStore(CLIENT_STORE).get(key);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("브라우저 백업 조회 실패"));
+  }).finally(() => db.close());
+}
+
+async function saveClientPageBackupText(text) {
+  if (!text) return;
+  const payload = JSON.parse(text);
+  if (!Array.isArray(payload.pages)) {
+    throw new Error("문서 백업 JSON에 pages 배열이 없습니다.");
+  }
+  await clientDbSet("pagesBackupText", text);
+  await clientDbSet("pagesBackupMeta", {
+    page_count: payload.pages.length,
+    saved_at: new Date().toISOString(),
+  });
+}
+
+async function saveLocalHistoryPayload(payload) {
+  if (!payload?.question || !payload?.answer) return;
+  const key = `local-history-${payload.id || Date.now()}`;
+  const item = {
+    id: key,
+    local: true,
+    question: payload.question,
+    answer: payload.answer,
+    hits: payload.hits || [],
+    hit_count: payload.hit_count || 0,
+    answer_mode: payload.answer_mode || "",
+    search_meta: payload.search_meta || {},
+    created_at: payload.created_at || new Date().toISOString(),
+  };
+  await clientDbSet(key, item);
+  const ids = (await clientDbGet("localHistoryIds")) || [];
+  await clientDbSet("localHistoryIds", [key, ...ids.filter((id) => id !== key)].slice(0, 100));
+}
+
+async function loadLocalHistoryItems() {
+  const ids = (await clientDbGet("localHistoryIds")) || [];
+  const items = [];
+  for (const id of ids) {
+    const item = await clientDbGet(id);
+    if (item) {
+      items.push({
+        id: item.id,
+        local: true,
+        question: item.question,
+        hit_count: item.hit_count,
+        created_at: item.created_at,
+      });
+    }
+  }
+  return items;
+}
+
+async function loadLocalHistoryDetail(id) {
+  return clientDbGet(id);
 }
 
 function formatDate(value) {
@@ -205,6 +299,7 @@ function renderStats(payload) {
   const ingestLabel = ingest.running ? "수집 중" : (ingest.status || "대기");
   const latest = formatDate(payload.latest_updated);
   const weightConfig = payload.weights || {};
+  const persistence = payload.persistence || {};
   const rankingConfigured = Boolean(
     (weightConfig.official_spaces || []).length ||
     Object.keys(weightConfig.space_weights || {}).length ||
@@ -217,6 +312,7 @@ function renderStats(payload) {
     <div class="${ingest.running ? "stat-active" : ""}"><strong>${escapeText(ingestLabel)}</strong><span>수집</span></div>
     <div><strong>${escapeText(latest)}</strong><span>최신</span></div>
     <div class="${payload.stale ? "stat-warning" : ""}"><strong>${payload.stale ? "캐시" : "실시간"}</strong><span>통계</span></div>
+    <div class="${persistence.uses_persistent_database ? "" : "stat-warning"}"><strong>${persistence.uses_persistent_database ? "영구" : "임시"}</strong><span>저장소</span></div>
     <div><strong>${rankingConfigured ? "보정" : "기본"}</strong><span>랭킹</span></div>
   `;
   renderIngestProgress(ingest.progress);
@@ -229,6 +325,7 @@ function renderOpsStatus(message) {
 function renderAdminTokenStatus(config) {
   if (!adminTokenStatus) return;
   const required = Boolean(config?.admin_token_required);
+  adminTokenRequired = required;
   adminTokenStatus.classList.toggle("token-required", required);
   adminTokenStatus.classList.toggle("token-open", !required);
   if (!required) {
@@ -268,7 +365,7 @@ function renderHistory(items = allHistoryItems) {
   historyList.innerHTML = visibleItems.map((item) => `
     <button class="history-item ${item.id === activeHistoryId ? "active" : ""}" data-id="${item.id}" type="button">
       <strong>${escapeText(item.question)}</strong>
-      <span>${formatDate(item.created_at)} · 근거 ${item.hit_count}개</span>
+      <span>${formatDate(item.created_at)} · 근거 ${item.hit_count}개${item.local ? " · 브라우저" : ""}</span>
     </button>
   `).join("");
 }
@@ -575,7 +672,38 @@ function rankerLabel(ranker) {
 }
 
 async function loadStats() {
-  renderStats(await fetchJson("/api/stats"));
+  const payload = await fetchJson("/api/stats");
+  renderStats(payload);
+  await maybeAutoRestorePages(payload);
+}
+
+async function maybeAutoRestorePages(statsPayload) {
+  if (autoRestoreAttempted || Number(statsPayload?.page_count || 0) > 0) return;
+  autoRestoreAttempted = true;
+  let backupText = "";
+  try {
+    backupText = await clientDbGet("pagesBackupText");
+  } catch (error) {
+    return;
+  }
+  if (!backupText) return;
+  if (adminTokenRequired && !adminToken) {
+    renderOpsStatus("서버 문서가 0개입니다. 브라우저 백업이 있지만 관리자 토큰 저장 후 자동 복원할 수 있습니다.");
+    return;
+  }
+  try {
+    renderOpsStatus("서버 문서가 0개라 브라우저 백업으로 자동 복원 중");
+    const payload = JSON.parse(backupText);
+    const result = await fetchJson("/api/import/pages.json", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...adminHeaders() },
+      body: JSON.stringify(payload),
+    });
+    renderOpsStatus(`자동 복원 완료 · 가져온 문서 ${result.imported}개 · 현재 문서 ${result.page_count}개`);
+    await loadStats();
+  } catch (error) {
+    renderOpsStatus(`자동 복원 실패 · ${error.message}`);
+  }
 }
 
 async function loadAdminConfig() {
@@ -589,13 +717,31 @@ async function loadAdminConfig() {
 }
 
 async function loadHistory() {
-  allHistoryItems = await fetchJson("/api/history");
+  const serverItems = await fetchJson("/api/history");
+  let localItems = [];
+  try {
+    localItems = await loadLocalHistoryItems();
+  } catch (error) {
+    localItems = [];
+  }
+  const seen = new Set(serverItems.map((item) => `${item.question}|${item.created_at}`));
+  allHistoryItems = [
+    ...serverItems,
+    ...localItems.filter((item) => !seen.has(`${item.question}|${item.created_at}`)),
+  ];
   renderHistory();
 }
 
 async function loadHistoryDetail(id) {
-  const payload = await fetchJson(`/api/history/${id}`);
+  const payload = String(id).startsWith("local-history-")
+    ? await loadLocalHistoryDetail(id)
+    : await fetchJson(`/api/history/${id}`);
+  if (!payload) {
+    renderOpsStatus("브라우저 히스토리를 찾을 수 없습니다.");
+    return;
+  }
   renderResult(payload);
+  saveLocalHistoryPayload(payload).catch(() => {});
   await loadHistory();
 }
 
@@ -615,6 +761,7 @@ askForm.addEventListener("submit", async (event) => {
       body: JSON.stringify({ question, search_mode: selectedSearchMode() }),
     });
     renderResult(payload);
+    saveLocalHistoryPayload(payload).catch(() => {});
     questionInput.value = "";
     await Promise.all([loadHistory(), loadStats()]);
   } catch (error) {
@@ -719,7 +866,7 @@ if (quickPrompts) {
 historyList.addEventListener("click", (event) => {
   const button = event.target.closest(".history-item");
   if (!button) return;
-  loadHistoryDetail(Number(button.dataset.id));
+  loadHistoryDetail(button.dataset.id);
 });
 
 if (historySearchInput) {
@@ -901,14 +1048,16 @@ if (jsonBackupButton) {
         const body = await response.text();
         throw new Error(`문서 백업 실패: ${response.status} ${body.slice(0, 160)}`);
       }
-      const blob = await response.blob();
+      const text = await response.text();
+      await saveClientPageBackupText(text);
+      const blob = new Blob([text], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
       link.download = `confluence_pages_backup_${new Date().toISOString().slice(0, 10)}.json`;
       link.click();
       URL.revokeObjectURL(url);
-      renderOpsStatus("문서 백업 다운로드 완료");
+      renderOpsStatus("문서 백업 다운로드 및 브라우저 보관 완료");
     } catch (error) {
       renderOpsStatus(error.message);
     } finally {
@@ -927,13 +1076,15 @@ if (restoreBackupButton && restoreBackupInput) {
     restoreBackupButton.disabled = true;
     renderOpsStatus("백업 복원 중");
     try {
-      const payload = JSON.parse(await file.text());
+      const text = await file.text();
+      await saveClientPageBackupText(text);
+      const payload = JSON.parse(text);
       const result = await fetchJson("/api/import/pages.json", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...adminHeaders() },
         body: JSON.stringify(payload),
       });
-      renderOpsStatus(`복원 완료 · 가져온 문서 ${result.imported}개 · 현재 문서 ${result.page_count}개`);
+      renderOpsStatus(`복원 완료 · 가져온 문서 ${result.imported}개 · 현재 문서 ${result.page_count}개 · 브라우저 백업 보관`);
       await loadStats();
     } catch (error) {
       renderOpsStatus(`백업 복원 실패: ${error.message}`);

@@ -132,6 +132,7 @@ def init_history_table() -> None:
 
 def page_stats(conn: sqlite3.Connection) -> dict[str, object]:
     config = load_config()
+    uses_postgres = getattr(conn, "is_postgres", False)
     page_count = conn.execute("SELECT COUNT(*) AS count FROM pages").fetchone()["count"]
     space_rows = conn.execute(
         "SELECT space, COUNT(*) AS count FROM pages GROUP BY space ORDER BY count DESC"
@@ -151,6 +152,13 @@ def page_stats(conn: sqlite3.Connection) -> dict[str, object]:
             "official_spaces": list(config.official_spaces),
             "space_weights": config.space_weights,
             "document_type_weights": config.document_type_weights,
+        },
+        "database": "postgres" if uses_postgres else "sqlite",
+        "persistence": {
+            "uses_persistent_database": uses_postgres,
+            "warning": None
+            if uses_postgres
+            else "DATABASE_URL이 없으면 배포/재시작 시 서버 DB가 초기화될 수 있습니다.",
         },
         "stale": False,
     }
