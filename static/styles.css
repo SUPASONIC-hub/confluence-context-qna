@@ -849,6 +849,28 @@ button[type="submit"]:disabled {
   font-weight: 700;
 }
 
+.source-search-row {
+  padding: 10px 15px 0;
+}
+
+.source-search-input {
+  width: 100%;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 11px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.source-search-input:focus {
+  border-color: var(--blue-strong);
+  box-shadow: 0 0 0 3px rgba(141, 210, 232, 0.28);
+}
+
 .source-card {
   border: 1px solid var(--line);
   border-left: 5px solid var(--blue);

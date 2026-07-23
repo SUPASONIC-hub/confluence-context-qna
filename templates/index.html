@@ -6,7 +6,7 @@
     <title>Confluence Knowledge QNA</title>
     <link rel="icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260723-12') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260723-13') }}" />
   </head>
   <body>
     <div class="app-shell">
@@ -114,12 +114,15 @@
               </label>
             </div>
             <div id="sourceFilters" class="source-filters"></div>
+            <div class="source-search-row">
+              <input id="sourceSearchInput" class="source-search-input" type="search" placeholder="근거 문서 내 검색" autocomplete="off" />
+            </div>
             <div id="sourceList" class="source-list"></div>
           </section>
         </section>
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js', v='20260723-12') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260723-13') }}"></script>
   </body>
 </html>

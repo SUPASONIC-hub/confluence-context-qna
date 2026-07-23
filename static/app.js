@@ -8,6 +8,7 @@ const answerOutput = document.querySelector("#answerOutput");
 const sourceList = document.querySelector("#sourceList");
 const sourceCount = document.querySelector("#sourceCount");
 const sourceSort = document.querySelector("#sourceSort");
+const sourceSearchInput = document.querySelector("#sourceSearchInput");
 const resultMeta = document.querySelector("#resultMeta");
 const answerToc = document.querySelector("#answerToc");
 const searchMetaPanel = document.querySelector("#searchMetaPanel");
@@ -40,6 +41,7 @@ let currentQuestion = "";
 let currentAnswer = "";
 let activeSourceType = "전체";
 let activeSourceSort = "score";
+let activeSourceKeyword = "";
 let adminToken = localStorage.getItem("adminToken") || "";
 let batchRunning = false;
 let stopBatchRequested = false;
@@ -319,16 +321,35 @@ function groupHitsByPage(hits) {
   }));
 }
 
+function groupMatchesKeyword(group, keyword) {
+  if (!keyword) return true;
+  const haystack = [
+    group.title,
+    group.space,
+    group.document_type,
+    group.last_updated,
+    group.created_at,
+    ...(group.matched_terms || []),
+    ...group.chunks.map((hit) => hit.excerpt || ""),
+  ].join(" ").toLowerCase();
+  return haystack.includes(keyword);
+}
+
 function renderSources(hits = currentHits) {
   const filteredHits = activeSourceType === "전체"
     ? hits
     : hits.filter((hit) => (hit.document_type || "일반문서") === activeSourceType);
   const visibleHits = sortedHits(filteredHits);
-  const visibleGroups = groupHitsByPage(visibleHits);
+  const keyword = activeSourceKeyword.trim().toLowerCase();
+  const allGroups = groupHitsByPage(visibleHits);
+  const visibleGroups = allGroups.filter((group) => groupMatchesKeyword(group, keyword));
+  const matchedHitCount = visibleGroups.reduce((sum, group) => sum + group.chunks.length, 0);
   renderSourceFilters(hits);
-  sourceCount.textContent = `문서 ${visibleGroups.length}개 · 근거 ${visibleHits.length}개`;
+  sourceCount.textContent = keyword
+    ? `문서 ${visibleGroups.length}/${allGroups.length}개 · 근거 ${matchedHitCount}/${visibleHits.length}개`
+    : `문서 ${visibleGroups.length}개 · 근거 ${visibleHits.length}개`;
   if (!visibleGroups.length) {
-    sourceList.innerHTML = `<div class="empty-state">표시할 근거 문서가 없습니다.</div>`;
+    sourceList.innerHTML = `<div class="empty-state">표시할 근거 문서가 없습니다. 필터나 목록 검색어를 조정하세요.</div>`;
     return;
   }
   sourceList.innerHTML = visibleGroups.map((group) => `
@@ -406,6 +427,8 @@ function renderResult(payload) {
   currentAnswer = payload.answer || "";
   currentHits = payload.hits || [];
   activeSourceType = "전체";
+  activeSourceKeyword = "";
+  if (sourceSearchInput) sourceSearchInput.value = "";
   answerOutput.innerHTML = renderAnswerMarkdown(payload.answer);
   renderAnswerToc(payload.answer);
   const mode = payload.answer_mode ? ` · ${payload.answer_mode}` : "";
@@ -682,6 +705,13 @@ sourceFilters.addEventListener("click", (event) => {
 if (sourceSort) {
   sourceSort.addEventListener("change", () => {
     activeSourceSort = sourceSort.value;
+    renderSources(currentHits);
+  });
+}
+
+if (sourceSearchInput) {
+  sourceSearchInput.addEventListener("input", () => {
+    activeSourceKeyword = sourceSearchInput.value || "";
     renderSources(currentHits);
   });
 }
