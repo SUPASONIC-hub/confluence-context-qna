@@ -1,5 +1,6 @@
 const historyList = document.querySelector("#historyList");
 const refreshHistoryButton = document.querySelector("#refreshHistory");
+const historySearchInput = document.querySelector("#historySearchInput");
 const askForm = document.querySelector("#askForm");
 const questionInput = document.querySelector("#questionInput");
 const askButton = document.querySelector("#askButton");
@@ -9,6 +10,7 @@ const sourceCount = document.querySelector("#sourceCount");
 const sourceSort = document.querySelector("#sourceSort");
 const resultMeta = document.querySelector("#resultMeta");
 const answerToc = document.querySelector("#answerToc");
+const searchMetaPanel = document.querySelector("#searchMetaPanel");
 const stats = document.querySelector("#stats");
 const sourceFilters = document.querySelector("#sourceFilters");
 const quickPrompts = document.querySelector("#quickPrompts");
@@ -22,6 +24,7 @@ const exportLink = document.querySelector("#exportLink");
 const jsonBackupButton = document.querySelector("#jsonBackupButton");
 const restoreBackupButton = document.querySelector("#restoreBackupButton");
 const restoreBackupInput = document.querySelector("#restoreBackupInput");
+const copyAnswerButton = document.querySelector("#copyAnswerButton");
 const rerunQuestionButton = document.querySelector("#rerunQuestionButton");
 const opsStatus = document.querySelector("#opsStatus");
 const ingestProgressBar = document.querySelector("#ingestProgressBar");
@@ -29,8 +32,10 @@ const ingestProgressDetail = document.querySelector("#ingestProgressDetail");
 
 const BATCH_SIZE = 80;
 let activeHistoryId = null;
+let allHistoryItems = [];
 let currentHits = [];
 let currentQuestion = "";
+let currentAnswer = "";
 let activeSourceType = "전체";
 let activeSourceSort = "score";
 let adminToken = localStorage.getItem("adminToken") || "";
@@ -209,12 +214,16 @@ function renderDiagnostics(payload) {
   renderIngestProgress(progress);
 }
 
-function renderHistory(items) {
-  if (!items.length) {
+function renderHistory(items = allHistoryItems) {
+  const keyword = (historySearchInput?.value || "").trim().toLowerCase();
+  const visibleItems = keyword
+    ? items.filter((item) => String(item.question || "").toLowerCase().includes(keyword))
+    : items;
+  if (!visibleItems.length) {
     historyList.innerHTML = `<div class="empty-state">저장된 질문이 없습니다.</div>`;
     return;
   }
-  historyList.innerHTML = items.map((item) => `
+  historyList.innerHTML = visibleItems.map((item) => `
     <button class="history-item ${item.id === activeHistoryId ? "active" : ""}" data-id="${item.id}" type="button">
       <strong>${escapeText(item.question)}</strong>
       <span>${formatDate(item.created_at)} · 근거 ${item.hit_count}개</span>
@@ -292,6 +301,7 @@ function escapeRegExp(value) {
 function renderResult(payload) {
   activeHistoryId = payload.id;
   currentQuestion = payload.question || "";
+  currentAnswer = payload.answer || "";
   currentHits = payload.hits || [];
   activeSourceType = "전체";
   answerOutput.innerHTML = renderAnswerMarkdown(payload.answer);
@@ -305,7 +315,30 @@ function renderResult(payload) {
   if (rerunQuestionButton) {
     rerunQuestionButton.disabled = !currentQuestion;
   }
+  if (copyAnswerButton) {
+    copyAnswerButton.disabled = !currentAnswer;
+  }
+  renderSearchMeta(meta);
   renderSources(currentHits);
+}
+
+function renderSearchMeta(meta) {
+  if (!searchMetaPanel) return;
+  if (!meta || !Object.keys(meta).length) {
+    searchMetaPanel.innerHTML = "";
+    return;
+  }
+  const docTypes = Object.entries(meta.doc_type_counts || {})
+    .map(([type, count]) => `${escapeText(type)} ${count}`)
+    .join(" · ") || "-";
+  const keywords = (meta.keywords || []).slice(0, 8).map((term) => `<span>${escapeText(term)}</span>`).join("");
+  searchMetaPanel.innerHTML = `
+    <div><strong>${escapeText(meta.confidence || "-")}</strong><span>신뢰도</span></div>
+    <div><strong>${escapeText(modeLabel(meta.mode || "balanced"))}</strong><span>검색 모드</span></div>
+    <div><strong>${escapeText(String(meta.top_score ?? 0))}</strong><span>top score</span></div>
+    <div class="search-meta-wide"><strong>${docTypes}</strong><span>문서 유형</span></div>
+    <div class="search-meta-keywords">${keywords || "<span>-</span>"}</div>
+  `;
 }
 
 function renderAnswerToc(answer) {
@@ -329,7 +362,8 @@ async function loadStats() {
 }
 
 async function loadHistory() {
-  renderHistory(await fetchJson("/api/history"));
+  allHistoryItems = await fetchJson("/api/history");
+  renderHistory();
 }
 
 async function loadHistoryDetail(id) {
@@ -374,6 +408,19 @@ if (rerunQuestionButton) {
   });
 }
 
+if (copyAnswerButton) {
+  copyAnswerButton.addEventListener("click", async () => {
+    if (!currentAnswer) return;
+    try {
+      await navigator.clipboard.writeText(currentAnswer);
+      resultMeta.textContent = `${resultMeta.textContent} · 복사됨`;
+    } catch (error) {
+      answerOutput.focus();
+      renderOpsStatus(`답변 복사 실패: ${error.message}`);
+    }
+  });
+}
+
 function selectedSearchMode() {
   return document.querySelector("input[name='searchMode']:checked")?.value || "balanced";
 }
@@ -407,6 +454,12 @@ historyList.addEventListener("click", (event) => {
   if (!button) return;
   loadHistoryDetail(Number(button.dataset.id));
 });
+
+if (historySearchInput) {
+  historySearchInput.addEventListener("input", () => {
+    renderHistory();
+  });
+}
 
 refreshHistoryButton.addEventListener("click", () => {
   Promise.all([loadHistory(), loadStats()]);

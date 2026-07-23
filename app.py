@@ -100,10 +100,12 @@ def init_history_table() -> None:
                 hits_json TEXT NOT NULL,
                 hit_count INTEGER NOT NULL,
                 answer_mode TEXT NOT NULL DEFAULT '',
+                search_meta_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL
             )
             """
         )
+        conn.execute("ALTER TABLE query_history ADD COLUMN IF NOT EXISTS search_meta_json TEXT NOT NULL DEFAULT '{}'")
     else:
         conn.execute(
             """
@@ -114,6 +116,7 @@ def init_history_table() -> None:
                 hits_json TEXT NOT NULL,
                 hit_count INTEGER NOT NULL,
                 answer_mode TEXT NOT NULL DEFAULT '',
+                search_meta_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL
             )
             """
@@ -121,6 +124,8 @@ def init_history_table() -> None:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(query_history)").fetchall()}
         if "answer_mode" not in columns:
             conn.execute("ALTER TABLE query_history ADD COLUMN answer_mode TEXT NOT NULL DEFAULT ''")
+        if "search_meta_json" not in columns:
+            conn.execute("ALTER TABLE query_history ADD COLUMN search_meta_json TEXT NOT NULL DEFAULT '{}'")
     conn.commit()
     conn.close()
 
@@ -352,7 +357,7 @@ def history_detail(history_id: int):
     try:
         row = conn.execute(
             """
-            SELECT id, question, answer, hits_json, hit_count, answer_mode, created_at
+            SELECT id, question, answer, hits_json, hit_count, answer_mode, search_meta_json, created_at
             FROM query_history
             WHERE id = ?
             """,
@@ -368,6 +373,7 @@ def history_detail(history_id: int):
                 "hits": json.loads(row["hits_json"]),
                 "hit_count": row["hit_count"],
                 "answer_mode": row["answer_mode"],
+                "search_meta": json.loads(row["search_meta_json"] or "{}"),
                 "created_at": row["created_at"],
             }
         )
@@ -394,20 +400,36 @@ def ask_api():
         if getattr(conn, "is_postgres", False):
             cursor = conn.execute(
                 """
-                INSERT INTO query_history(question, answer, hits_json, hit_count, answer_mode, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO query_history(question, answer, hits_json, hit_count, answer_mode, search_meta_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
                 """,
-                (question, answer, json.dumps(serialized, ensure_ascii=False), len(hits), answer_mode, created_at),
+                (
+                    question,
+                    answer,
+                    json.dumps(serialized, ensure_ascii=False),
+                    len(hits),
+                    answer_mode,
+                    json.dumps(meta, ensure_ascii=False),
+                    created_at,
+                ),
             )
             history_id = cursor.fetchone()["id"]
         else:
             cursor = conn.execute(
                 """
-                INSERT INTO query_history(question, answer, hits_json, hit_count, answer_mode, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO query_history(question, answer, hits_json, hit_count, answer_mode, search_meta_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (question, answer, json.dumps(serialized, ensure_ascii=False), len(hits), answer_mode, created_at),
+                (
+                    question,
+                    answer,
+                    json.dumps(serialized, ensure_ascii=False),
+                    len(hits),
+                    answer_mode,
+                    json.dumps(meta, ensure_ascii=False),
+                    created_at,
+                ),
             )
             history_id = cursor.lastrowid
         conn.commit()

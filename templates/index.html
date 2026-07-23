@@ -54,6 +54,7 @@
           <h2>질문 히스토리</h2>
           <button id="refreshHistory" type="button" title="새로고침">↻</button>
         </div>
+        <input id="historySearchInput" class="token-input" type="search" placeholder="히스토리 검색" autocomplete="off" />
         <div class="history-list" id="historyList"></div>
       </aside>
 
@@ -89,10 +90,12 @@
               <h3>답변 결과</h3>
               <div class="result-actions">
                 <span id="resultMeta">대기 중</span>
+                <button id="copyAnswerButton" type="button" disabled>복사</button>
                 <button id="rerunQuestionButton" type="button" disabled>다시 질문</button>
               </div>
             </div>
             <div id="answerToc" class="answer-toc"></div>
+            <div id="searchMetaPanel" class="search-meta-panel"></div>
             <div id="answerOutput" class="answer-output">왼쪽 히스토리를 선택하거나 새 질문을 입력하세요.</div>
           </article>
 
@@ -115,6 +118,6 @@
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js', v='20260723-5') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260723-6') }}"></script>
   </body>
 </html>
