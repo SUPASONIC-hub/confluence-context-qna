@@ -1074,11 +1074,11 @@ def extract_terms(question: str) -> list[str]:
 def essential_terms(question: str) -> list[str]:
     terms = []
     for term in DOMAIN_TERMS:
-        if term not in INTENT_ONLY_TERMS and term in question:
+        if term in question:
             terms.append(term)
     tokens = question_tokens(question)
     for token in tokens:
-        if len(token) >= 2 and not any(intent in token for intent in INTENT_ONLY_TERMS):
+        if len(token) >= 2 and token not in STOPWORDS:
             terms.append(token)
     return ordered_unique(terms)
 

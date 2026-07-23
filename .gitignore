@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 data/
 Profile.jpg
+20*_*.txt
