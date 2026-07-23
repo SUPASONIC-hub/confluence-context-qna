@@ -19,6 +19,10 @@ const resetBatchButton = document.querySelector("#resetBatchButton");
 const diagnosticsButton = document.querySelector("#diagnosticsButton");
 const refreshStatsButton = document.querySelector("#refreshStats");
 const exportLink = document.querySelector("#exportLink");
+const jsonBackupButton = document.querySelector("#jsonBackupButton");
+const restoreBackupButton = document.querySelector("#restoreBackupButton");
+const restoreBackupInput = document.querySelector("#restoreBackupInput");
+const rerunQuestionButton = document.querySelector("#rerunQuestionButton");
 const opsStatus = document.querySelector("#opsStatus");
 const ingestProgressBar = document.querySelector("#ingestProgressBar");
 const ingestProgressDetail = document.querySelector("#ingestProgressDetail");
@@ -26,6 +30,7 @@ const ingestProgressDetail = document.querySelector("#ingestProgressDetail");
 const BATCH_SIZE = 80;
 let activeHistoryId = null;
 let currentHits = [];
+let currentQuestion = "";
 let activeSourceType = "전체";
 let activeSourceSort = "score";
 let adminToken = localStorage.getItem("adminToken") || "";
@@ -196,9 +201,10 @@ function renderDiagnostics(payload) {
     ["API 토큰", config.api_token_set],
   ].filter((item) => !item[1]).map((item) => item[0]);
   const configLabel = missing.length ? `누락 ${missing.join(", ")}` : "필수 설정 정상";
+  const persistence = payload.persistence?.uses_persistent_database ? "영구 DB" : "임시 DB";
   renderOpsStatus(
     `점검 ${payload.status} · DB ${payload.database} · 문서 ${counts.pages ?? 0} · chunk ${counts.chunks ?? 0} · ` +
-    `${configLabel} · 스페이스 ${progress.completed_spaces ?? 0}/${progress.total_spaces ?? 0}`
+    `${configLabel} · ${persistence} · 스페이스 ${progress.completed_spaces ?? 0}/${progress.total_spaces ?? 0}`
   );
   renderIngestProgress(progress);
 }
@@ -285,6 +291,7 @@ function escapeRegExp(value) {
 
 function renderResult(payload) {
   activeHistoryId = payload.id;
+  currentQuestion = payload.question || "";
   currentHits = payload.hits || [];
   activeSourceType = "전체";
   answerOutput.innerHTML = renderAnswerMarkdown(payload.answer);
@@ -295,6 +302,9 @@ function renderResult(payload) {
   const confidence = meta.confidence ? ` · 신뢰도 ${meta.confidence}` : "";
   const searchMode = meta.mode ? ` · ${modeLabel(meta.mode)}` : "";
   resultMeta.textContent = `${formatDate(payload.created_at)} · 문서 ${pages}개 · 근거 ${payload.hit_count}개${confidence}${searchMode}${mode}`;
+  if (rerunQuestionButton) {
+    rerunQuestionButton.disabled = !currentQuestion;
+  }
   renderSources(currentHits);
 }
 
@@ -354,6 +364,15 @@ askForm.addEventListener("submit", async (event) => {
     askButton.textContent = "질문하기";
   }
 });
+
+if (rerunQuestionButton) {
+  rerunQuestionButton.addEventListener("click", () => {
+    if (!currentQuestion) return;
+    questionInput.value = currentQuestion;
+    questionInput.focus();
+    askForm.requestSubmit();
+  });
+}
 
 function selectedSearchMode() {
   return document.querySelector("input[name='searchMode']:checked")?.value || "balanced";
@@ -516,6 +535,59 @@ exportLink.addEventListener("click", (event) => {
     })
     .catch((error) => renderOpsStatus(error.message));
 });
+
+if (jsonBackupButton) {
+  jsonBackupButton.addEventListener("click", async () => {
+    jsonBackupButton.disabled = true;
+    renderOpsStatus("문서 백업 생성 중");
+    try {
+      const response = await fetch(apiUrl("/api/export/pages.json"), { headers: adminHeaders() });
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`문서 백업 실패: ${response.status} ${body.slice(0, 160)}`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `confluence_pages_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      renderOpsStatus("문서 백업 다운로드 완료");
+    } catch (error) {
+      renderOpsStatus(error.message);
+    } finally {
+      jsonBackupButton.disabled = false;
+    }
+  });
+}
+
+if (restoreBackupButton && restoreBackupInput) {
+  restoreBackupButton.addEventListener("click", () => {
+    restoreBackupInput.click();
+  });
+  restoreBackupInput.addEventListener("change", async () => {
+    const file = restoreBackupInput.files?.[0];
+    if (!file) return;
+    restoreBackupButton.disabled = true;
+    renderOpsStatus("백업 복원 중");
+    try {
+      const payload = JSON.parse(await file.text());
+      const result = await fetchJson("/api/import/pages.json", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...adminHeaders() },
+        body: JSON.stringify(payload),
+      });
+      renderOpsStatus(`복원 완료 · 가져온 문서 ${result.imported}개 · 현재 문서 ${result.page_count}개`);
+      await loadStats();
+    } catch (error) {
+      renderOpsStatus(`백업 복원 실패: ${error.message}`);
+    } finally {
+      restoreBackupButton.disabled = false;
+      restoreBackupInput.value = "";
+    }
+  });
+}
 
 if (adminTokenInput) {
   adminTokenInput.value = adminToken;

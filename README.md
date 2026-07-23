@@ -147,6 +147,15 @@ CSV 백업:
 https://YOUR-SERVICE.onrender.com/api/export/pages.csv
 ```
 
+문서 전체 백업/복원:
+
+```text
+GET  https://YOUR-SERVICE.onrender.com/api/export/pages.json
+POST https://YOUR-SERVICE.onrender.com/api/import/pages.json
+```
+
+운영 패널의 `문서 백업`은 검색에 필요한 본문과 chunk 재생성 정보를 JSON으로 내려받습니다. 배포 후 문서 수가 0으로 보이면 `백업 복원`으로 이 JSON을 업로드해 다시 수집하지 않고 검색 DB를 복구할 수 있습니다. Render에서는 `DATABASE_URL`이 Postgres로 연결되어 있어야 배포/재시작 후에도 데이터가 유지됩니다.
+
 `ADMIN_TOKEN`이 설정되어 있으면 브라우저 운영 패널에 토큰을 저장한 뒤 CSV 백업을 누르거나, `X-Admin-Token` 헤더로 호출합니다.
 
 GitHub Actions 예약 수집:
@@ -180,6 +189,8 @@ ADMIN_TOKEN=Render에 설정한 ADMIN_TOKEN
 - 균형/정밀/넓게/최신 검색 모드
 - 문서 다양성 기반 근거 chunk 재정렬
 - 답변 섹션 탐색, 근거 정렬, 매칭 키워드 하이라이트 UI
+- 질문 히스토리에서 이전 질문을 다시 실행하는 재질문 흐름
+- 수집 문서 JSON 백업과 복원
 - 결론 후보, 최신성, 히스토리, 리스크 중심 검색 보고서 출력
 - 웹 기반 질문/답변 및 히스토리 저장
 - `DATABASE_URL` 기반 Postgres 저장소와 로컬 SQLite fallback

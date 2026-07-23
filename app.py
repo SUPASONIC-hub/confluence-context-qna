@@ -19,6 +19,7 @@ from confluence_qna import (
     load_config,
     merged_hits,
     search_meta,
+    upsert_stored_page,
 )
 
 
@@ -202,6 +203,36 @@ def focused_excerpt(text: str, terms: list[str], size: int = 520) -> str:
 
 def db_count(conn: sqlite3.Connection, table: str) -> int:
     return int(conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"])
+
+
+def backup_pages_payload(conn: sqlite3.Connection) -> dict[str, object]:
+    rows = conn.execute(
+        """
+        SELECT page_id, title, text, created_at, last_updated, author, space, url, raw_json
+        FROM pages
+        ORDER BY space, title
+        """
+    ).fetchall()
+    return {
+        "format": "confluence-context-qna-pages",
+        "version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "page_count": len(rows),
+        "pages": [
+            {
+                "page_id": row["page_id"],
+                "title": row["title"],
+                "text": row["text"],
+                "created_at": row["created_at"],
+                "last_updated": row["last_updated"],
+                "author": row["author"],
+                "space": row["space"],
+                "url": row["url"],
+                "raw_json": row["raw_json"],
+            }
+            for row in rows
+        ],
+    }
 
 
 def run_ingest_job(limit: int | None) -> None:
@@ -488,6 +519,13 @@ def admin_diagnostics():
                 "api_token_set": bool(config.api_token),
                 "space_key": config.space_key,
                 "admin_token_required": bool(os.getenv("ADMIN_TOKEN", "")),
+                "database_url_set": bool(os.getenv("DATABASE_URL", "")),
+            },
+            "persistence": {
+                "uses_persistent_database": getattr(conn, "is_postgres", False),
+                "warning": None
+                if getattr(conn, "is_postgres", False)
+                else "DATABASE_URL이 없으면 Render 배포/재시작 시 SQLite 데이터가 사라질 수 있습니다.",
             },
             "ingest_progress": progress,
         }
@@ -549,6 +587,53 @@ def export_pages_csv():
         mimetype="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=confluence_pages.csv"},
     )
+
+
+@app.get("/api/export/pages.json")
+def export_pages_json():
+    auth_error = require_admin_response()
+    if auth_error:
+        return auth_error
+    conn = connect_db()
+    try:
+        payload = backup_pages_payload(conn)
+    finally:
+        conn.close()
+    body = json.dumps(payload, ensure_ascii=False)
+    return Response(
+        body,
+        mimetype="application/json; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=confluence_pages_backup.json"},
+    )
+
+
+@app.post("/api/import/pages.json")
+def import_pages_json():
+    auth_error = require_admin_response()
+    if auth_error:
+        return auth_error
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "JSON backup payload is required"}), 400
+    pages = payload.get("pages")
+    if not isinstance(pages, list):
+        return jsonify({"error": "backup payload must contain a pages array"}), 400
+
+    conn = connect_db()
+    imported = 0
+    try:
+        for item in pages:
+            if not isinstance(item, dict):
+                continue
+            upsert_stored_page(conn, item)
+            imported += 1
+        conn.commit()
+        return jsonify({"status": "ok", "imported": imported, "page_count": db_count(conn, "pages")})
+    except Exception as error:
+        logger.exception("Page backup import failed")
+        return jsonify(error_payload(error)), 400
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

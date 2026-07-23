@@ -41,7 +41,12 @@
             <span id="ingestProgressBar"></span>
           </div>
           <div class="progress-detail" id="ingestProgressDetail">진행 정보 없음</div>
-          <a class="export-link" id="exportLink" href="/api/export/pages.csv">CSV 백업</a>
+          <div class="backup-actions">
+            <a class="export-link" id="exportLink" href="/api/export/pages.csv">CSV 백업</a>
+            <button id="jsonBackupButton" type="button">문서 백업</button>
+            <button id="restoreBackupButton" type="button">백업 복원</button>
+            <input id="restoreBackupInput" type="file" accept="application/json,.json" hidden />
+          </div>
           <div class="ops-status" id="opsStatus">대기 중</div>
         </div>
 
@@ -82,7 +87,10 @@
           <article class="answer-panel">
             <div class="panel-title">
               <h3>답변 결과</h3>
-              <span id="resultMeta">대기 중</span>
+              <div class="result-actions">
+                <span id="resultMeta">대기 중</span>
+                <button id="rerunQuestionButton" type="button" disabled>다시 질문</button>
+              </div>
             </div>
             <div id="answerToc" class="answer-toc"></div>
             <div id="answerOutput" class="answer-output">왼쪽 히스토리를 선택하거나 새 질문을 입력하세요.</div>
@@ -107,6 +115,6 @@
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js', v='20260723-4') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260723-5') }}"></script>
   </body>
 </html>

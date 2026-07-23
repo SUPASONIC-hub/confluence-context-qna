@@ -518,6 +518,51 @@ def upsert_page(conn: sqlite3.Connection, config: Config, item: dict) -> None:
     )
 
 
+def upsert_stored_page(conn: sqlite3.Connection, item: dict) -> None:
+    page_id = str(item.get("page_id") or "").strip()
+    if not page_id:
+        raise ValueError("backup page is missing page_id")
+    title = str(item.get("title") or "")
+    text = str(item.get("text") or "")
+    created_at = str(item.get("created_at") or "")
+    last_updated = str(item.get("last_updated") or "")
+    author = str(item.get("author") or "")
+    space = str(item.get("space") or "")
+    url = str(item.get("url") or "")
+    raw_json = item.get("raw_json")
+    if not isinstance(raw_json, str):
+        raw_json = json.dumps(raw_json or {}, ensure_ascii=False)
+    conn.execute(
+        """
+        INSERT INTO pages(page_id, title, text, created_at, last_updated, author, space, url, raw_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(page_id) DO UPDATE SET
+            title=excluded.title,
+            text=excluded.text,
+            created_at=excluded.created_at,
+            last_updated=excluded.last_updated,
+            author=excluded.author,
+            space=excluded.space,
+            url=excluded.url,
+            raw_json=excluded.raw_json
+        """,
+        (page_id, title, text, created_at, last_updated, author, space, url, raw_json),
+    )
+    conn.execute("DELETE FROM page_chunks WHERE page_id = ?", (page_id,))
+    conn.executemany(
+        """
+        INSERT INTO page_chunks(
+            page_id, chunk_index, title, text, created_at, last_updated, author, space, url
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (page_id, index, title, chunk, created_at, last_updated, author, space, url)
+            for index, chunk in enumerate(split_chunks(text))
+        ],
+    )
+
+
 def utc_now_text() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 

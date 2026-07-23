@@ -154,6 +154,7 @@ textarea {
 }
 
 .ops-actions button,
+.backup-actions button,
 .export-link {
   display: grid;
   min-height: 36px;
@@ -168,14 +169,23 @@ textarea {
 }
 
 .ops-actions button:hover,
+.backup-actions button:hover,
 .export-link:hover {
   border-color: var(--blue-strong);
   background: #eef9fc;
 }
 
-.ops-actions button:disabled {
+.ops-actions button:disabled,
+.backup-actions button:disabled,
+.result-actions button:disabled {
   cursor: wait;
   opacity: 0.62;
+}
+
+.backup-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .ops-status {
@@ -431,6 +441,31 @@ button[type="submit"]:disabled {
 .panel-title span {
   color: var(--muted);
   font-size: 13px;
+}
+
+.result-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.result-actions button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+  color: var(--blue-deep);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.result-actions button:hover:not(:disabled) {
+  border-color: var(--blue-strong);
+  background: #eef9fc;
 }
 
 .source-sort {
@@ -741,6 +776,11 @@ mark {
   }
 
   .source-sort {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .result-actions {
     width: 100%;
     justify-content: space-between;
   }
