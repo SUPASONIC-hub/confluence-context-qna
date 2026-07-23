@@ -2,8 +2,17 @@ name: Ingest Confluence Batch
 
 on:
   workflow_dispatch:
+    inputs:
+      reset:
+        description: "Reset saved ingest progress before this run"
+        required: false
+        default: "false"
   schedule:
     - cron: "0 */6 * * *"
+
+concurrency:
+  group: confluence-ingest-batch
+  cancel-in-progress: false
 
 jobs:
   ingest:
@@ -14,6 +23,7 @@ jobs:
         env:
           SERVICE_URL: ${{ secrets.SERVICE_URL }}
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          RESET_INGEST: ${{ github.event.inputs.reset || 'false' }}
         run: |
           set -euo pipefail
           if [ -z "${SERVICE_URL:-}" ]; then
@@ -31,6 +41,7 @@ jobs:
 
           service_url = os.environ["SERVICE_URL"].rstrip("/")
           admin_token = os.environ.get("ADMIN_TOKEN", "")
+          reset_ingest = os.environ.get("RESET_INGEST", "false").lower() == "true"
           parsed_service_url = urllib.parse.urlparse(service_url)
           if parsed_service_url.scheme not in ("http", "https") or not parsed_service_url.netloc:
               print(
@@ -84,7 +95,7 @@ jobs:
           print(f"before page_count={stats.get('page_count')} latest={stats.get('latest_updated')}")
 
           for batch in range(1, 13):
-              data = json.dumps({"batch_size": 80}).encode("utf-8")
+              data = json.dumps({"batch_size": 80, "reset": reset_ingest and batch == 1}).encode("utf-8")
               request = urllib.request.Request(url, data=data, headers=headers, method="POST")
               for attempt in range(1, 4):
                   try:

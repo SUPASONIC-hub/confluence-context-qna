@@ -133,6 +133,14 @@ Invoke-RestMethod -Method Post `
 https://YOUR-SERVICE.onrender.com/api/ingest/status
 ```
 
+관리자 운영 점검:
+
+```text
+https://YOUR-SERVICE.onrender.com/api/admin/diagnostics
+```
+
+브라우저 운영 패널에서는 관리자 토큰 저장 후 `배치 수집`으로 이어서 수집하고, `처음부터 수집`으로 저장된 수집 진행 위치를 0부터 다시 계산합니다. 기존 문서는 삭제하지 않고 upsert로 최신 내용으로 갱신합니다.
+
 CSV 백업:
 
 ```text
@@ -149,6 +157,8 @@ GitHub Actions 예약 수집:
 SERVICE_URL=https://YOUR-SERVICE.onrender.com
 ADMIN_TOKEN=Render에 설정한 ADMIN_TOKEN
 ```
+
+수동 실행 시 `reset=true`를 선택하면 저장된 수집 진행 위치를 초기화하고 처음부터 다시 수집합니다. 워크플로는 중복 실행을 막도록 concurrency가 설정되어 있습니다.
 
 주의: Render 무료 Postgres는 1GB 제한과 30일 만료 제한이 있습니다. 무료 조건에서 로컬 SQLite보다 안정적이지만 장기 운영용 영구 DB는 아닙니다.
 

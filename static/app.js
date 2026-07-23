@@ -12,6 +12,8 @@ const sourceFilters = document.querySelector("#sourceFilters");
 const adminTokenInput = document.querySelector("#adminTokenInput");
 const saveTokenButton = document.querySelector("#saveTokenButton");
 const runBatchButton = document.querySelector("#runBatchButton");
+const resetBatchButton = document.querySelector("#resetBatchButton");
+const diagnosticsButton = document.querySelector("#diagnosticsButton");
 const refreshStatsButton = document.querySelector("#refreshStats");
 const exportLink = document.querySelector("#exportLink");
 const opsStatus = document.querySelector("#opsStatus");
@@ -123,6 +125,23 @@ function renderStats(payload) {
 
 function renderOpsStatus(message) {
   opsStatus.textContent = message;
+}
+
+function renderDiagnostics(payload) {
+  const counts = payload.counts || {};
+  const config = payload.config || {};
+  const progress = payload.ingest_progress || {};
+  const missing = [
+    ["URL", config.base_url_set],
+    ["이메일", config.email_set],
+    ["API 토큰", config.api_token_set],
+  ].filter((item) => !item[1]).map((item) => item[0]);
+  const configLabel = missing.length ? `누락 ${missing.join(", ")}` : "필수 설정 정상";
+  renderOpsStatus(
+    `점검 ${payload.status} · DB ${payload.database} · 문서 ${counts.pages ?? 0} · chunk ${counts.chunks ?? 0} · ` +
+    `${configLabel} · 스페이스 ${progress.completed_spaces ?? 0}/${progress.total_spaces ?? 0}`
+  );
+  renderIngestProgress(progress);
 }
 
 function renderHistory(items) {
@@ -252,7 +271,7 @@ saveTokenButton.addEventListener("click", () => {
   }
 });
 
-runBatchButton.addEventListener("click", async () => {
+async function runBatchLoop({ reset = false } = {}) {
   if (batchRunning) {
     stopBatchRequested = true;
     renderOpsStatus("현재 배치가 끝나면 중지합니다.");
@@ -261,9 +280,10 @@ runBatchButton.addEventListener("click", async () => {
   batchRunning = true;
   stopBatchRequested = false;
   runBatchButton.disabled = true;
+  if (resetBatchButton) resetBatchButton.disabled = true;
   runBatchButton.textContent = "중지 요청";
   runBatchButton.disabled = false;
-  renderOpsStatus("배치 수집 실행 중");
+  renderOpsStatus(reset ? "처음부터 수집 실행 중" : "배치 수집 실행 중");
   try {
     let totalProcessed = 0;
     for (let batch = 1; batch <= 30; batch += 1) {
@@ -271,7 +291,7 @@ runBatchButton.addEventListener("click", async () => {
       const payload = await fetchJson("/api/ingest/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...adminHeaders() },
-        body: JSON.stringify({ batch_size: BATCH_SIZE }),
+        body: JSON.stringify({ batch_size: BATCH_SIZE, reset: reset && batch === 1 }),
       });
       totalProcessed += Number(payload.processed || 0);
       renderIngestProgress(payload.progress);
@@ -293,9 +313,39 @@ runBatchButton.addEventListener("click", async () => {
     batchRunning = false;
     stopBatchRequested = false;
     runBatchButton.disabled = false;
+    if (resetBatchButton) resetBatchButton.disabled = false;
     runBatchButton.textContent = "배치 수집";
   }
+}
+
+runBatchButton.addEventListener("click", () => {
+  runBatchLoop();
 });
+
+if (resetBatchButton) {
+  resetBatchButton.addEventListener("click", () => {
+    if (batchRunning) {
+      stopBatchRequested = true;
+      renderOpsStatus("현재 배치가 끝나면 중지합니다.");
+      return;
+    }
+    runBatchLoop({ reset: true });
+  });
+}
+
+if (diagnosticsButton) {
+  diagnosticsButton.addEventListener("click", async () => {
+    diagnosticsButton.disabled = true;
+    renderOpsStatus("상태 점검 중");
+    try {
+      renderDiagnostics(await fetchJson("/api/admin/diagnostics", { headers: adminHeaders() }));
+    } catch (error) {
+      renderOpsStatus(error.message);
+    } finally {
+      diagnosticsButton.disabled = false;
+    }
+  });
+}
 
 refreshStatsButton.addEventListener("click", () => {
   loadStats().catch((error) => renderOpsStatus(error.message));

@@ -176,6 +176,10 @@ def error_payload(error: Exception) -> dict[str, str]:
     return {"error": message[:1200]}
 
 
+def db_count(conn: sqlite3.Connection, table: str) -> int:
+    return int(conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"])
+
+
 def run_ingest_job(limit: int | None) -> None:
     with INGEST_LOCK:
         INGEST_STATE.update(
@@ -430,6 +434,55 @@ def admin_config():
             "document_type_weights": config.document_type_weights,
         }
     )
+
+
+@app.get("/api/admin/diagnostics")
+def admin_diagnostics():
+    auth_error = require_admin_response()
+    if auth_error:
+        return auth_error
+    config = load_config()
+    conn = None
+    try:
+        init_history_table()
+        conn = connect_db()
+        progress = ingest_progress_status(conn)
+        payload = {
+            "status": "ok",
+            "database": "postgres" if getattr(conn, "is_postgres", False) else "sqlite",
+            "counts": {
+                "pages": db_count(conn, "pages"),
+                "chunks": db_count(conn, "page_chunks"),
+                "history": db_count(conn, "query_history"),
+            },
+            "config": {
+                "base_url_set": bool(config.base_url),
+                "email_set": bool(config.email),
+                "api_token_set": bool(config.api_token),
+                "space_key": config.space_key,
+                "admin_token_required": bool(os.getenv("ADMIN_TOKEN", "")),
+            },
+            "ingest_progress": progress,
+        }
+        missing = [
+            name
+            for name, is_set in (
+                ("CONFLUENCE_BASE_URL", bool(config.base_url)),
+                ("CONFLUENCE_EMAIL", bool(config.email)),
+                ("CONFLUENCE_API_TOKEN", bool(config.api_token)),
+            )
+            if not is_set
+        ]
+        if missing:
+            payload["status"] = "warning"
+            payload["warning"] = f"Missing required env vars: {', '.join(missing)}"
+        return jsonify(payload)
+    except Exception as error:
+        logger.exception("Diagnostics failed")
+        return jsonify(error_payload(error)), 500
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @app.get("/api/export/pages.csv")
