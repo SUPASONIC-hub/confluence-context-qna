@@ -398,9 +398,9 @@ def ingest_batch_api():
     if auth_error:
         return auth_error
     payload = request.get_json(silent=True) or {}
-    batch_size = int(payload.get("batch_size") or 100)
+    batch_size = int(payload.get("batch_size") or 80)
     reset = bool(payload.get("reset"))
-    batch_size = max(1, min(batch_size, 300))
+    batch_size = max(1, min(batch_size, 80))
     result = ingest_batch(batch_size=batch_size, reset=reset)
     return jsonify(result)
 

@@ -124,7 +124,7 @@ Invoke-RestMethod -Method Post `
   -Uri "https://YOUR-SERVICE.onrender.com/api/ingest/batch" `
   -Headers @{ "X-Admin-Token" = "ADMIN_TOKEN_VALUE" } `
   -ContentType "application/json" `
-  -Body '{"batch_size":250}'
+  -Body '{"batch_size":80}'
 ```
 
 수집 상태 확인:

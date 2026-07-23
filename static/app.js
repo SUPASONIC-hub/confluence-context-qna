@@ -69,7 +69,8 @@ async function fetchJson(url, options) {
     }
   }
   if (!response.ok) {
-    const detail = payload?.error || body.trim() || response.statusText;
+    const rawDetail = payload?.error || body.trim() || response.statusText;
+    const detail = String(rawDetail).replace(/\s+/g, " ").slice(0, 220);
     throw new Error(`요청 실패: ${response.status} ${detail}`);
   }
   if (!payload) {
@@ -234,7 +235,7 @@ runBatchButton.addEventListener("click", async () => {
     const payload = await fetchJson("/api/ingest/batch", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...adminHeaders() },
-      body: JSON.stringify({ batch_size: 250 }),
+      body: JSON.stringify({ batch_size: 80 }),
     });
     renderOpsStatus(`수집 ${payload.status} · 처리 ${payload.processed}개 · 남은 스페이스 ${payload.progress?.remaining ?? "-"}`);
     await loadStats();
