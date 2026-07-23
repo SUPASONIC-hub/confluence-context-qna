@@ -64,6 +64,16 @@ function formatDate(value) {
   });
 }
 
+function formatTime(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleTimeString("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function escapeText(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
     "&": "&amp;",
@@ -213,7 +223,7 @@ function renderStats(payload) {
 }
 
 function renderOpsStatus(message) {
-  opsStatus.textContent = message;
+  opsStatus.textContent = `${formatTime()} · ${message}`;
 }
 
 function renderAdminTokenStatus(config) {
@@ -762,11 +772,12 @@ async function runBatchLoop({ reset = false } = {}) {
   stopBatchRequested = false;
   runBatchButton.disabled = true;
   if (resetBatchButton) resetBatchButton.disabled = true;
-  runBatchButton.textContent = "중지 요청";
+  runBatchButton.textContent = "중지하기";
   runBatchButton.disabled = false;
   renderOpsStatus(reset ? "처음부터 수집 실행 중" : "배치 수집 실행 중");
+  let totalProcessed = 0;
+  let finalStatus = "running";
   try {
-    let totalProcessed = 0;
     for (let batch = 1; batch <= 30; batch += 1) {
       if (stopBatchRequested) break;
       const payload = await fetchJson("/api/ingest/batch", {
@@ -775,27 +786,38 @@ async function runBatchLoop({ reset = false } = {}) {
         body: JSON.stringify({ batch_size: BATCH_SIZE, reset: reset && batch === 1 }),
       });
       totalProcessed += Number(payload.processed || 0);
+      finalStatus = payload.status || finalStatus;
       renderIngestProgress(payload.progress);
       renderOpsStatus(`배치 ${batch} · 이번 ${payload.processed}개 · 누적 ${totalProcessed}개 · 상태 ${payload.status}`);
       await loadStats();
-      if (payload.status === "completed") break;
+      if (payload.status === "completed") {
+        renderOpsStatus(`수집 완료 · 누적 처리 ${totalProcessed}개`);
+        break;
+      }
       if (!payload.processed) {
-        renderOpsStatus(`추가 처리 문서 없음 · 상태 ${payload.status}`);
+        renderOpsStatus(`추가 처리 문서 없음 · 누적 처리 ${totalProcessed}개 · 상태 ${payload.status}`);
         break;
       }
       await new Promise((resolve) => setTimeout(resolve, 900));
     }
     if (stopBatchRequested) {
       renderOpsStatus(`중지됨 · 누적 처리 ${totalProcessed}개`);
+    } else if (finalStatus !== "completed" && totalProcessed > 0) {
+      renderOpsStatus(`배치 일시 종료 · 누적 처리 ${totalProcessed}개 · 상태 ${finalStatus}`);
     }
   } catch (error) {
-    renderOpsStatus(error.message);
+    renderOpsStatus(`수집 실패 · ${error.message}`);
   } finally {
     batchRunning = false;
     stopBatchRequested = false;
     runBatchButton.disabled = false;
     if (resetBatchButton) resetBatchButton.disabled = false;
     runBatchButton.textContent = "배치 수집";
+    await Promise.all([
+      loadStats().catch((error) => renderOpsStatus(`통계 갱신 실패 · ${error.message}`)),
+      loadHistory().catch((error) => renderOpsStatus(`히스토리 갱신 실패 · ${error.message}`)),
+      loadAdminConfig(),
+    ]);
   }
 }
 
