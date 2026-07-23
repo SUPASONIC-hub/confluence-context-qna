@@ -959,10 +959,9 @@ def weighted_token_overlap(query_tokens: list[str], doc_tokens: list[str]) -> fl
     return score / max(len(query_tokens), 1)
 
 
-def best_sentence_overlap(question: str, text: str) -> float:
-    query_tokens = semantic_tokens(question)
+def best_sentence_overlap(query_tokens: list[str], text: str) -> float:
     best = 0.0
-    for sentence in sentence_units(text)[:80]:
+    for sentence in sentence_units(text)[:24]:
         score = weighted_token_overlap(query_tokens, semantic_tokens(sentence))
         if score > best:
             best = score
@@ -990,7 +989,7 @@ def context_score(
     )
     semantic_overlap = weighted_token_overlap(query_semantic, text_semantic)
     title_overlap = weighted_token_overlap(query_semantic, title_semantic)
-    sentence_overlap = best_sentence_overlap(query, row["text"])
+    sentence_overlap = best_sentence_overlap(query_semantic, row["text"])
     score = recency_boost(row["last_updated"])
     score += semantic_overlap * 30.0
     score += title_overlap * 24.0
@@ -1195,7 +1194,12 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
     rows_by_id: dict[tuple[str, int], sqlite3.Row] = {}
     like_clauses = []
     params = []
-    candidate_terms = ordered_unique([*essentials, *terms, *semantic_tokens(query)])[:24]
+    candidate_terms = [
+        term
+        for term in ordered_unique([*essentials, *terms, *question_tokens(query)])
+        if len(term) >= 2
+    ][:18]
+    max_candidates = max(limit * 24, 72)
     for term in candidate_terms:
         like_clauses.append("(LOWER(title) LIKE ? OR LOWER(text) LIKE ?)")
         like = f"%{term}%"
@@ -1207,8 +1211,10 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
             SELECT page_id, chunk_index, title, text, created_at, last_updated, author, space, url
             FROM page_chunks
             WHERE {" OR ".join(like_clauses)}
+            ORDER BY last_updated DESC
+            LIMIT ?
             """,
-            params,
+            [*params, max_candidates],
         ).fetchall()
         rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in like_rows})
 
@@ -1222,7 +1228,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
                 WHERE page_chunks_fts MATCH ?
                 LIMIT ?
                 """,
-                (fts_query(query), max(limit * 6, 30)),
+                (fts_query(query), max(limit * 8, 40)),
             ).fetchall()
             rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in fts_rows})
         except sqlite3.OperationalError:

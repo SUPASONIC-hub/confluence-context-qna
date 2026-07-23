@@ -445,6 +445,9 @@ def ask_api():
                 "created_at": created_at,
             }
         )
+    except Exception as error:
+        logger.exception("Ask API failed")
+        return jsonify(error_payload(error)), 500
     finally:
         conn.close()
 
