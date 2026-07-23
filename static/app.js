@@ -33,7 +33,7 @@ const opsStatus = document.querySelector("#opsStatus");
 const ingestProgressBar = document.querySelector("#ingestProgressBar");
 const ingestProgressDetail = document.querySelector("#ingestProgressDetail");
 
-const BATCH_SIZE = 80;
+const BATCH_SIZE = 20;
 const CLIENT_DB_NAME = "confluence-qna-client-backup";
 const CLIENT_DB_VERSION = 1;
 const CLIENT_STORE = "keyval";

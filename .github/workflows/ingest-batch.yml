@@ -95,7 +95,7 @@ jobs:
           print(f"before page_count={stats.get('page_count')} latest={stats.get('latest_updated')}")
 
           for batch in range(1, 13):
-              data = json.dumps({"batch_size": 80, "reset": reset_ingest and batch == 1}).encode("utf-8")
+              data = json.dumps({"batch_size": 20, "reset": reset_ingest and batch == 1}).encode("utf-8")
               request = urllib.request.Request(url, data=data, headers=headers, method="POST")
               for attempt in range(1, 4):
                   try:

@@ -555,9 +555,9 @@ def ingest_batch_api():
     if auth_error:
         return auth_error
     payload = request.get_json(silent=True) or {}
-    batch_size = int(payload.get("batch_size") or 80)
+    batch_size = int(payload.get("batch_size") or 20)
     reset = bool(payload.get("reset"))
-    batch_size = max(1, min(batch_size, 80))
+    batch_size = max(1, min(batch_size, 40))
     try:
         result = ingest_batch(batch_size=batch_size, reset=reset)
     except Exception as error:

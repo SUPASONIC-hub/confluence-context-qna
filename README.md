@@ -126,7 +126,7 @@ Invoke-RestMethod -Method Post `
   -Uri "https://YOUR-SERVICE.onrender.com/api/ingest/batch" `
   -Headers @{ "X-Admin-Token" = "ADMIN_TOKEN_VALUE" } `
   -ContentType "application/json" `
-  -Body '{"batch_size":80}'
+  -Body '{"batch_size":20}'
 ```
 
 수집 상태 확인:
@@ -141,7 +141,7 @@ https://YOUR-SERVICE.onrender.com/api/ingest/status
 https://YOUR-SERVICE.onrender.com/api/admin/diagnostics
 ```
 
-브라우저 운영 패널에서는 관리자 토큰 저장 후 `배치 수집`으로 이어서 수집하고, `처음부터 수집`으로 저장된 수집 진행 위치를 0부터 다시 계산합니다. 기존 문서는 삭제하지 않고 upsert로 최신 내용으로 갱신합니다.
+브라우저 운영 패널에서는 관리자 토큰 저장 후 `배치 수집`으로 이어서 수집하고, `처음부터 수집`으로 저장된 수집 진행 위치를 0부터 다시 계산합니다. 기본 배치 크기는 Render 게이트웨이 타임아웃을 피하기 위해 20개입니다. 기존 문서는 삭제하지 않고 upsert로 최신 내용으로 갱신합니다.
 `관리자 토큰 필요`가 표시되면 Render의 `ADMIN_TOKEN`과 같은 값을 운영 패널에 저장한 뒤 배치 수집을 실행합니다.
 
 CSV 백업:
