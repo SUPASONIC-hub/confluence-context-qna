@@ -182,13 +182,20 @@ function renderStats(payload) {
   const ingest = payload.ingest || {};
   const ingestLabel = ingest.running ? "수집 중" : (ingest.status || "대기");
   const latest = formatDate(payload.latest_updated);
+  const weightConfig = payload.weights || {};
+  const rankingConfigured = Boolean(
+    (weightConfig.official_spaces || []).length ||
+    Object.keys(weightConfig.space_weights || {}).length ||
+    Object.keys(weightConfig.document_type_weights || {}).length
+  );
   stats.innerHTML = `
     <div><strong>${payload.page_count}</strong><span>문서</span></div>
     <div><strong>${(payload.spaces || []).length}</strong><span>스페이스</span></div>
     <div><strong>${payload.history_count}</strong><span>질문</span></div>
-    <div><strong>${escapeText(ingestLabel)}</strong><span>수집</span></div>
+    <div class="${ingest.running ? "stat-active" : ""}"><strong>${escapeText(ingestLabel)}</strong><span>수집</span></div>
     <div><strong>${escapeText(latest)}</strong><span>최신</span></div>
-    <div><strong>${payload.stale ? "캐시" : "실시간"}</strong><span>통계</span></div>
+    <div class="${payload.stale ? "stat-warning" : ""}"><strong>${payload.stale ? "캐시" : "실시간"}</strong><span>통계</span></div>
+    <div><strong>${rankingConfigured ? "보정" : "기본"}</strong><span>랭킹</span></div>
   `;
   renderIngestProgress(ingest.progress);
 }
@@ -408,6 +415,7 @@ function renderSearchMeta(meta) {
     .slice(0, 4)
     .map((note) => `<li>${escapeText(note)}</li>`)
     .join("");
+  const actions = recommendedSearchActions(meta);
   searchMetaPanel.innerHTML = `
     <div><strong>${escapeText(meta.confidence || "-")}</strong><span>신뢰도</span></div>
     <div><strong>${escapeText(modeLabel(meta.mode || "balanced"))}</strong><span>검색 모드</span></div>
@@ -422,7 +430,46 @@ function renderSearchMeta(meta) {
       <strong>검색 품질 노트</strong>
       <ul>${qualityNotes || "<li>품질 진단 정보가 없습니다.</li>"}</ul>
     </div>
+    <div class="search-next-actions">
+      <strong>다음 액션</strong>
+      <div>
+        ${actions.map((action) => `
+          <button type="button" data-search-action="${escapeText(action.type)}">
+            ${escapeText(action.label)}
+          </button>
+        `).join("")}
+      </div>
+    </div>
   `;
+}
+
+function recommendedSearchActions(meta) {
+  const actions = [];
+  const confidence = meta.confidence || "";
+  const coverage = Number(meta.coverage_ratio ?? 0);
+  const officialCount = Number(meta.official_count ?? 0);
+  const staleCount = Number(meta.stale_count ?? 0);
+  if (confidence !== "높음") {
+    actions.push({ type: "strict", label: "정밀 재검색" });
+  }
+  if (coverage < 0.7 || officialCount === 0) {
+    actions.push({ type: "broad", label: "넓게 재검색" });
+  }
+  if (staleCount > 0) {
+    actions.push({ type: "recent", label: "최신 재검색" });
+  }
+  if (currentHits.some((hit) => ["정책", "매뉴얼", "결정사항"].includes(hit.document_type || ""))) {
+    actions.push({ type: "official", label: "공식 근거만" });
+  }
+  if (!actions.length) {
+    actions.push({ type: "copy", label: "답변 복사" });
+  }
+  return actions.slice(0, 4);
+}
+
+function setSearchMode(mode) {
+  const input = document.querySelector(`input[name='searchMode'][value='${mode}']`);
+  if (input) input.checked = true;
 }
 
 function renderAnswerToc(answer) {
@@ -514,6 +561,34 @@ if (answerToc) {
     const button = event.target.closest("button[data-target]");
     if (!button) return;
     document.getElementById(button.dataset.target)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  });
+}
+
+if (searchMetaPanel) {
+  searchMetaPanel.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-search-action]");
+    if (!button) return;
+    const action = button.dataset.searchAction;
+    if (["strict", "broad", "recent"].includes(action)) {
+      if (!currentQuestion) return;
+      setSearchMode(action);
+      questionInput.value = currentQuestion;
+      askForm.requestSubmit();
+      return;
+    }
+    if (action === "official") {
+      const preferredType = ["정책", "매뉴얼", "결정사항"].find((type) =>
+        currentHits.some((hit) => (hit.document_type || "일반문서") === type)
+      );
+      if (!preferredType) return;
+      activeSourceType = preferredType;
+      renderSources(currentHits);
+      document.querySelector(".source-panel")?.scrollIntoView({ block: "start", behavior: "smooth" });
+      return;
+    }
+    if (action === "copy") {
+      copyAnswerButton?.click();
+    }
   });
 }
 

@@ -125,6 +125,16 @@ button,
   background: rgba(255, 255, 255, 0.72);
 }
 
+.stats div.stat-active {
+  border-color: var(--blue-strong);
+  background: #eef9fc;
+}
+
+.stats div.stat-warning {
+  border-color: var(--peach);
+  background: #fff7f4;
+}
+
 .stats strong,
 .stats span {
   display: block;
@@ -622,6 +632,10 @@ button[type="submit"]:disabled {
   grid-column: 1 / -1;
 }
 
+.search-next-actions {
+  grid-column: 1 / -1;
+}
+
 .search-quality-notes strong {
   margin-bottom: 6px;
 }
@@ -638,6 +652,30 @@ button[type="submit"]:disabled {
 
 .search-quality-notes li {
   overflow-wrap: anywhere;
+}
+
+.search-next-actions > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.search-next-actions button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+  color: var(--blue-deep);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.search-next-actions button:hover {
+  border-color: var(--blue-strong);
+  background: #eef9fc;
 }
 
 .search-meta-keywords {
@@ -1014,6 +1052,7 @@ mark {
 
   .search-meta-panel .search-meta-wide,
   .search-quality-notes,
+  .search-next-actions,
   .search-meta-keywords {
     grid-column: auto;
   }
