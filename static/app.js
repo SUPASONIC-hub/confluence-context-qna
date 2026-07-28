@@ -280,7 +280,7 @@ function shouldRetryFetch(response, options) {
 
 async function fetchJson(url, options) {
   const method = String(options?.method || "GET").toUpperCase();
-  const attempts = method === "GET" ? 3 : options?.retryPostPath === "/api/ask" ? 2 : 1;
+  const attempts = Number(options?.retryAttempts || (method === "GET" ? 3 : options?.retryPostPath === "/api/ask" ? 2 : 1));
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
@@ -288,7 +288,9 @@ async function fetchJson(url, options) {
     } catch (error) {
       lastError = error;
       if (!error.retryable || attempt === attempts) break;
-      await new Promise((resolve) => setTimeout(resolve, 1200 * attempt));
+      const delayMs = Math.min(5000, 1200 * attempt);
+      renderOpsStatus(`서버 응답 대기 중 · ${attempt}/${attempts - 1}회 재시도`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
   throw lastError;
@@ -310,7 +312,7 @@ async function fetchJsonOnce(url, options = {}) {
     const rawDetail = payload?.error || body.trim() || response.statusText;
     let detail = String(rawDetail).replace(/\s+/g, " ").slice(0, 220);
     if (response.status === 502 && body.trim().startsWith("<!DOCTYPE html>")) {
-      detail = "Render gateway error. 배포/재시작 중이거나 요청이 오래 걸렸습니다. 잠시 후 자동 재시도합니다.";
+      detail = "Render gateway error. 배포 안정화 중이거나 서버 보호 타임아웃이 발생했습니다. 잠시 후 자동 재시도합니다.";
     }
     const error = new Error(`요청 실패: ${response.status} ${detail}`);
     error.retryable = shouldRetryFetch(response, options);
@@ -1437,7 +1439,7 @@ if (diagnosticsButton) {
     diagnosticsButton.disabled = true;
     renderOpsStatus("상태 점검 중");
     try {
-      renderDiagnostics(await fetchJson("/api/admin/diagnostics", { headers: adminHeaders() }));
+      renderDiagnostics(await fetchJson("/api/admin/diagnostics", { headers: adminHeaders(), retryAttempts: 5 }));
     } catch (error) {
       renderOpsStatus(error.message);
     } finally {

@@ -43,8 +43,10 @@ INGEST_MAX_PAGE_TEXT_CHARS=450000
 검색 품질이 낮게 표시되면 먼저 `CONFLUENCE_OFFICIAL_SPACES`를 지정하고, 자주 쓰는 공식 스페이스에는 `CONFLUENCE_SPACE_WEIGHTS`를 2-5점 범위로 부여하세요. 앱의 검색 품질 패널은 핵심어 매칭률, 공식 근거 수, 오래된 후보 수, 추천 검색어를 함께 보여줍니다.
 운영 통계의 `인덱스`, `chunk/page`, `공식공간`, `랭킹` 카드가 경고 상태면 검색 품질이 낮아질 수 있습니다. 문서 수집 완료, 공식 스페이스 설정, 랭킹 가중치 설정을 먼저 확인하세요.
 `ADMIN_TOKEN`을 설정하면 수집/백업 API 호출 시 `X-Admin-Token` 헤더가 필요합니다.
-`SEARCH_TIME_BUDGET_SECONDS`는 검색 요청 하나가 후보 재랭킹에 쓰는 시간 예산입니다. Render gateway 502가 잦으면 5-7초로 낮추고, 질문을 정밀 모드로 유도하세요.
+`SEARCH_TIME_BUDGET_SECONDS`는 검색 요청 하나가 후보 재랭킹에 쓰는 시간 예산입니다. 기본값은 4.2초로 Render 5초 health check보다 먼저 요청을 정리하도록 맞춰져 있습니다.
 `SEARCH_MAX_CANDIDATES`는 쿼리별 재랭킹 후보 상한입니다. 문서가 많은 환경에서 검색 응답이 느리면 72-96 범위로 낮춰 보세요.
+`DB_STATEMENT_TIMEOUT_MS`는 Postgres 단일 SQL의 제한 시간입니다. 기본값은 4500ms이며, 느린 검색/진단 쿼리가 gunicorn worker를 오래 붙잡지 않도록 합니다.
+`DB_SCHEMA_TIMEOUT_MS`는 배포 직후 최초 스키마 확인 작업의 제한 시간입니다. 기본값은 15000ms이며, 이후 요청에서는 스키마 확인을 반복하지 않습니다.
 `ASK_CACHE_TTL_SECONDS`는 같은 질문/검색 모드 재실행 시 서버 메모리 캐시를 유지하는 시간입니다. 반복 질문이나 502 후 재시도 비용을 줄입니다.
 `INGEST_FETCH_LIMIT`는 Confluence API에서 한 번에 가져오는 페이지 수입니다. Render 메모리가 빠듯하면 10-20을 권장합니다.
 `INGEST_BATCH_MAX_SIZE`는 브라우저나 외부 호출이 한 번에 요청할 수 있는 최대 수집 페이지 수입니다. 긴 요청으로 `/healthz`가 밀리지 않도록 40 이하를 권장합니다.

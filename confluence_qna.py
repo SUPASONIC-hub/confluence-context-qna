@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 import time
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -32,6 +33,8 @@ DEFAULT_INGEST_FETCH_LIMIT = 20
 DEFAULT_INGEST_TIME_BUDGET_SECONDS = 12
 DEFAULT_INGEST_MEMORY_SOFT_LIMIT_MB = 360
 DEFAULT_INGEST_MAX_PAGE_TEXT_CHARS = 450_000
+POSTGRES_SCHEMA_LOCK = threading.Lock()
+POSTGRES_SCHEMA_READY = False
 
 
 class PostgresConnection:
@@ -51,6 +54,9 @@ class PostgresConnection:
 
     def commit(self) -> None:
         self.conn.commit()
+
+    def rollback(self) -> None:
+        self.conn.rollback()
 
     def close(self) -> None:
         self.conn.close()
@@ -192,10 +198,24 @@ def connect_db():
 
 
 def connect_postgres(database_url: str) -> PostgresConnection:
+    global POSTGRES_SCHEMA_READY
     if psycopg is None or dict_row is None:
         raise RuntimeError("Postgres 사용을 위해 `pip install -r requirements.txt`를 실행하세요.")
     raw_conn = psycopg.connect(database_url, row_factory=dict_row, connect_timeout=3)
     conn = PostgresConnection(raw_conn)
+    schema_timeout_ms = max(1000, parse_int_env("DB_SCHEMA_TIMEOUT_MS", 15000))
+    statement_timeout_ms = max(1000, parse_int_env("DB_STATEMENT_TIMEOUT_MS", 4500))
+    conn.execute("SET statement_timeout = ?", (schema_timeout_ms,))
+    if not POSTGRES_SCHEMA_READY:
+        with POSTGRES_SCHEMA_LOCK:
+            if not POSTGRES_SCHEMA_READY:
+                ensure_postgres_schema(conn)
+                POSTGRES_SCHEMA_READY = True
+    conn.execute("SET statement_timeout = ?", (statement_timeout_ms,))
+    return conn
+
+
+def ensure_postgres_schema(conn: PostgresConnection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS pages (
@@ -245,7 +265,6 @@ def connect_postgres(database_url: str) -> PostgresConnection:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_page_chunks_updated ON page_chunks(last_updated)")
     conn.commit()
     backfill_page_chunks(conn)
-    return conn
 
 
 def connect_sqlite() -> sqlite3.Connection:
@@ -2104,7 +2123,7 @@ def merged_hits(conn: sqlite3.Connection, question: str, mode: str = "balanced")
     mode = mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced"
     by_id: dict[tuple[str, int], SearchHit] = {}
     votes: dict[tuple[str, int], int] = {}
-    deadline = time.monotonic() + float(os.getenv("SEARCH_TIME_BUDGET_SECONDS", "8"))
+    deadline = time.monotonic() + max(1.5, parse_float_env("SEARCH_TIME_BUDGET_SECONDS", 4.2))
     per_query_limit = 8 if mode == "broad" else 6 if mode == "recent" else 5
     queries = derive_queries(question, mode)
     queries = queries[:5 if mode == "broad" else 4]

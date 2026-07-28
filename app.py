@@ -38,6 +38,8 @@ INGEST_STATE = {
 }
 STATS_LOCK = threading.Lock()
 ASK_CACHE_LOCK = threading.Lock()
+HISTORY_SCHEMA_LOCK = threading.Lock()
+HISTORY_SCHEMA_READY = False
 ASK_CACHE: dict[str, dict[str, object]] = {}
 LAST_STATS = {
     "page_count": 0,
@@ -204,6 +206,17 @@ def require_admin_response():
 
 
 def init_history_table() -> None:
+    global HISTORY_SCHEMA_READY
+    if HISTORY_SCHEMA_READY:
+        return
+    with HISTORY_SCHEMA_LOCK:
+        if HISTORY_SCHEMA_READY:
+            return
+        ensure_history_table()
+        HISTORY_SCHEMA_READY = True
+
+
+def ensure_history_table() -> None:
     conn = connect_db()
     if getattr(conn, "is_postgres", False):
         conn.execute(
@@ -650,19 +663,21 @@ def history_detail(history_id: int):
 
 @app.post("/api/ask")
 def ask_api():
-    init_history_table()
-    pressure = service_pressure_status()
-    if pressure["memory"].get("near_limit"):
-        return jsonify({"error": "server memory pressure; retry shortly", "pressure": pressure}), 503
     payload = request.get_json(silent=True) or {}
     question = str(payload.get("question", "")).strip()
     search_mode = str(payload.get("search_mode", "balanced")).strip() or "balanced"
     if not question:
         return jsonify({"error": "question is required"}), 400
 
-    conn = connect_db()
+    pressure = service_pressure_status()
+    if pressure["memory"].get("near_limit"):
+        return jsonify({"error": "server memory pressure; retry shortly", "pressure": pressure}), 503
+
     started = time.monotonic()
+    conn = None
     try:
+        init_history_table()
+        conn = connect_db()
         cached_payload = get_cached_ask(question, search_mode)
         if cached_payload:
             answer = str(cached_payload["answer"])
@@ -737,9 +752,11 @@ def ask_api():
         return jsonify(response_payload)
     except Exception as error:
         logger.exception("Ask API failed")
-        return jsonify(error_payload(error)), 500
+        status = 503 if "timeout" in str(error).lower() or "canceling statement" in str(error).lower() else 500
+        return jsonify(error_payload(error)), status
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 @app.post("/api/history/<int:history_id>/feedback")
