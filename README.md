@@ -31,6 +31,10 @@ SEARCH_TIME_BUDGET_SECONDS=8
 SLOW_SEARCH_MS=6500
 ASK_CACHE_TTL_SECONDS=600
 SEARCH_MAX_CANDIDATES=120
+INGEST_FETCH_LIMIT=20
+INGEST_BATCH_TIME_BUDGET_SECONDS=20
+INGEST_MEMORY_SOFT_LIMIT_MB=420
+INGEST_MAX_PAGE_TEXT_CHARS=450000
 ```
 
 `CONFLUENCE_OFFICIAL_SPACES`에는 공식 정책/운영 문서가 들어있는 스페이스 키를 쉼표로 입력합니다. 해당 스페이스의 검색 결과는 점수가 더 높게 계산됩니다.
@@ -41,6 +45,9 @@ SEARCH_MAX_CANDIDATES=120
 `SEARCH_TIME_BUDGET_SECONDS`는 검색 요청 하나가 후보 재랭킹에 쓰는 시간 예산입니다. Render gateway 502가 잦으면 5-7초로 낮추고, 질문을 정밀 모드로 유도하세요.
 `SEARCH_MAX_CANDIDATES`는 쿼리별 재랭킹 후보 상한입니다. 문서가 많은 환경에서 검색 응답이 느리면 72-96 범위로 낮춰 보세요.
 `ASK_CACHE_TTL_SECONDS`는 같은 질문/검색 모드 재실행 시 서버 메모리 캐시를 유지하는 시간입니다. 반복 질문이나 502 후 재시도 비용을 줄입니다.
+`INGEST_FETCH_LIMIT`는 Confluence API에서 한 번에 가져오는 페이지 수입니다. Render 메모리가 빠듯하면 10-20을 권장합니다.
+`INGEST_BATCH_TIME_BUDGET_SECONDS`와 `INGEST_MEMORY_SOFT_LIMIT_MB`에 닿으면 수집 API는 `paused`로 반환하고, 이미 저장한 페이지의 다음 위치부터 다음 배치에서 자동 재개합니다.
+`INGEST_MAX_PAGE_TEXT_CHARS`는 비정상적으로 큰 페이지 본문이 수집 프로세스와 DB를 압박하지 않도록 페이지별 검색 본문을 제한합니다.
 `요청 실패: 502 Render gateway error`가 표시되면 배포/재시작 중이거나 검색 후보가 많아 요청 시간이 길어진 상태일 수 있습니다. 앱은 `/api/ask`를 한 번 재시도하고, 실패 시 히스토리/통계를 다시 확인합니다.
 `DATABASE_URL`이 있으면 Postgres를 사용하고, 없으면 로컬 SQLite(`data/confluence_qna.sqlite3`)를 사용합니다.
 
@@ -216,6 +223,7 @@ ADMIN_TOKEN=Render에 설정한 ADMIN_TOKEN
 - 최근 유용/부정확 피드백 기반 랭킹 보정
 - 검색 시간 예산, 느린 검색 표시, Render 502 복구 안내
 - 같은 질문/모드 서버 캐시와 수집/복원 시 캐시 무효화
+- 수집 페이지 단위 커밋, 진행 지점 저장, 메모리/시간 소프트 리밋 기반 안전 일시정지
 - 핵심어 근접도와 제목 매칭 기반 검색 점수 보정
 - 다중 쿼리 검색 후보 생성
 - 균형/정밀/넓게/최신 검색 모드
@@ -228,6 +236,7 @@ ADMIN_TOKEN=Render에 설정한 ADMIN_TOKEN
 - 누락 핵심어, 결과 품질 분포, 품질순 근거 정렬 표시
 - 질문 문맥 프로파일과 근거별 문맥 매칭 신호 표시
 - 질문 입력 중 검색 품질 힌트와 운영 인덱스 건강도 표시
+- 수집 fetch 크기, RSS 메모리, 안전 일시정지 사유를 운영 패널에 표시
 - 근거 문서 목록 점진 렌더링과 필터 입력 디바운스로 대량 결과 화면 응답성 개선
 - 검색 품질 이슈별 맞춤 재검색 액션과 운영 점검 로그 표시
 - 유용/부정확 피드백 버튼과 운영 피드백 집계 표시

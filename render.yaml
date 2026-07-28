@@ -26,6 +26,22 @@ services:
         value: "정책:4,매뉴얼:3,결정사항:3,이슈:2"
       - key: ADMIN_TOKEN
         sync: false
+      - key: SEARCH_TIME_BUDGET_SECONDS
+        value: "8"
+      - key: SLOW_SEARCH_MS
+        value: "6500"
+      - key: ASK_CACHE_TTL_SECONDS
+        value: "600"
+      - key: SEARCH_MAX_CANDIDATES
+        value: "120"
+      - key: INGEST_FETCH_LIMIT
+        value: "20"
+      - key: INGEST_BATCH_TIME_BUDGET_SECONDS
+        value: "20"
+      - key: INGEST_MEMORY_SOFT_LIMIT_MB
+        value: "420"
+      - key: INGEST_MAX_PAGE_TEXT_CHARS
+        value: "450000"
       - key: DATABASE_URL
         fromDatabase:
           name: confluence-context-qna-db

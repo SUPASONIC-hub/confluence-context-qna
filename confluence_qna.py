@@ -28,6 +28,10 @@ except Exception:
 
 
 DB_PATH = Path("data/confluence_qna.sqlite3")
+DEFAULT_INGEST_FETCH_LIMIT = 20
+DEFAULT_INGEST_TIME_BUDGET_SECONDS = 20
+DEFAULT_INGEST_MEMORY_SOFT_LIMIT_MB = 420
+DEFAULT_INGEST_MAX_PAGE_TEXT_CHARS = 450_000
 
 
 class PostgresConnection:
@@ -113,6 +117,13 @@ def load_config() -> Config:
 def parse_int_env(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
 
@@ -222,10 +233,14 @@ def connect_postgres(database_url: str) -> PostgresConnection:
             space TEXT PRIMARY KEY,
             next_start INTEGER NOT NULL DEFAULT 0,
             completed BOOLEAN NOT NULL DEFAULT FALSE,
-            updated_at TEXT NOT NULL DEFAULT ''
+            updated_at TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT '',
+            message TEXT NOT NULL DEFAULT ''
         )
         """
     )
+    conn.execute("ALTER TABLE ingest_progress ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT ''")
+    conn.execute("ALTER TABLE ingest_progress ADD COLUMN IF NOT EXISTS message TEXT NOT NULL DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_page_chunks_space ON page_chunks(space)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_page_chunks_updated ON page_chunks(last_updated)")
     conn.commit()
@@ -275,7 +290,9 @@ def connect_sqlite() -> sqlite3.Connection:
             space TEXT PRIMARY KEY,
             next_start INTEGER NOT NULL DEFAULT 0,
             completed BOOLEAN NOT NULL DEFAULT 0,
-            updated_at TEXT NOT NULL DEFAULT ''
+            updated_at TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT '',
+            message TEXT NOT NULL DEFAULT ''
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS page_chunks_fts USING fts5(
@@ -321,6 +338,8 @@ def connect_sqlite() -> sqlite3.Connection:
         """
     )
     ensure_column(conn, "pages", "created_at", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "ingest_progress", "status", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "ingest_progress", "message", "TEXT NOT NULL DEFAULT ''")
     backfill_page_chunks(conn)
     return conn
 
@@ -486,6 +505,59 @@ def fetch_page_batch(config: Config, space: str, start: int, limit: int) -> list
     return data.get("results", [])
 
 
+def current_rss_mb() -> float:
+    try:
+        status = Path("/proc/self/status")
+        if status.exists():
+            for line in status.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1]) / 1024
+    except Exception:
+        pass
+    try:
+        import resource
+
+        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return usage / 1024 if sys.platform != "darwin" else usage / (1024 * 1024)
+    except Exception:
+        return 0.0
+
+
+def ingest_memory_soft_limit_mb() -> float:
+    return max(0.0, parse_float_env("INGEST_MEMORY_SOFT_LIMIT_MB", DEFAULT_INGEST_MEMORY_SOFT_LIMIT_MB))
+
+
+def ingest_memory_status() -> dict[str, object]:
+    rss_mb = round(current_rss_mb(), 1)
+    limit_mb = ingest_memory_soft_limit_mb()
+    return {
+        "rss_mb": rss_mb,
+        "soft_limit_mb": limit_mb,
+        "near_limit": bool(limit_mb and rss_mb and rss_mb >= limit_mb),
+    }
+
+
+def should_pause_ingest(started_at: float, processed: int) -> tuple[bool, str]:
+    memory = ingest_memory_status()
+    if memory["near_limit"]:
+        return True, f"메모리 소프트 리밋 도달: RSS {memory['rss_mb']}MB / limit {memory['soft_limit_mb']}MB"
+    budget = parse_float_env("INGEST_BATCH_TIME_BUDGET_SECONDS", DEFAULT_INGEST_TIME_BUDGET_SECONDS)
+    if processed > 0 and budget > 0 and time.monotonic() - started_at >= budget:
+        return True, f"요청 시간 예산 도달: {round(time.monotonic() - started_at, 1)}s / {budget}s"
+    return False, ""
+
+
+def slim_raw_json(item: dict) -> str:
+    raw = {
+        key: value
+        for key, value in item.items()
+        if key not in {"body", "extensions", "metadata"}
+    }
+    return json.dumps(raw, ensure_ascii=False)
+
+
 def page_record(config: Config, item: dict) -> dict[str, object]:
     version = item.get("version", {})
     history = item.get("history", {})
@@ -494,6 +566,9 @@ def page_record(config: Config, item: dict) -> dict[str, object]:
     body = ((item.get("body") or {}).get("storage") or {}).get("value", "")
     title = item.get("title", "")
     text = clean_html(body)
+    max_text_chars = max(0, parse_int_env("INGEST_MAX_PAGE_TEXT_CHARS", DEFAULT_INGEST_MAX_PAGE_TEXT_CHARS))
+    if max_text_chars and len(text) > max_text_chars:
+        text = text[:max_text_chars]
     created_at = history.get("createdDate", "")
     last_updated = version.get("when", "")
     url = page_url(config, item)
@@ -506,7 +581,7 @@ def page_record(config: Config, item: dict) -> dict[str, object]:
         "author": author,
         "space": space,
         "url": url,
-        "raw_json": json.dumps(item, ensure_ascii=False),
+        "raw_json": slim_raw_json(item),
         "chunks": [
             (item["id"], index, title, chunk, created_at, last_updated, author, space, url)
             for index, chunk in enumerate(split_chunks(text))
@@ -621,11 +696,11 @@ def initialize_ingest_progress(conn, config: Config, reset: bool = False) -> Non
     for space in spaces:
         conn.execute(
             """
-            INSERT INTO ingest_progress(space, next_start, completed, updated_at)
-            VALUES (?, 0, ?, ?)
+            INSERT INTO ingest_progress(space, next_start, completed, updated_at, status, message)
+            VALUES (?, 0, ?, ?, ?, ?)
             ON CONFLICT(space) DO NOTHING
             """,
-            (space, False, utc_now_text()),
+            (space, False, utc_now_text(), "pending", ""),
         )
     conn.commit()
 
@@ -633,7 +708,7 @@ def initialize_ingest_progress(conn, config: Config, reset: bool = False) -> Non
 def ingest_progress_status(conn) -> dict[str, object]:
     rows = conn.execute(
         """
-        SELECT space, next_start, completed, updated_at
+        SELECT space, next_start, completed, updated_at, status, message
         FROM ingest_progress
         ORDER BY space
         """
@@ -644,6 +719,8 @@ def ingest_progress_status(conn) -> dict[str, object]:
             "next_start": row["next_start"],
             "completed": bool(row["completed"]),
             "updated_at": row["updated_at"],
+            "status": row["status"],
+            "message": row["message"],
         }
         for row in rows
     ]
@@ -655,6 +732,8 @@ def ingest_progress_status(conn) -> dict[str, object]:
         "total_spaces": len(spaces),
         "indexed_offsets": sum(int(space["next_start"] or 0) for space in spaces),
         "active_space": next((space["space"] for space in spaces if not space["completed"]), None),
+        "memory": ingest_memory_status(),
+        "last_message": next((space["message"] for space in spaces if space["message"]), ""),
     }
 
 
@@ -664,9 +743,16 @@ def ingest_batch(batch_size: int = 100, reset: bool = False) -> dict[str, object
     conn = connect_db()
     processed = 0
     touched_spaces = []
+    started_at = time.monotonic()
+    requested_batch_size = max(1, batch_size)
+    fetch_limit = max(1, min(parse_int_env("INGEST_FETCH_LIMIT", DEFAULT_INGEST_FETCH_LIMIT), requested_batch_size, 100))
+    pause_reason = ""
     try:
         initialize_ingest_progress(conn, config, reset=reset)
-        while processed < batch_size:
+        while processed < requested_batch_size:
+            should_pause, pause_reason = should_pause_ingest(started_at, processed)
+            if should_pause:
+                break
             row = conn.execute(
                 """
                 SELECT space, next_start
@@ -680,30 +766,75 @@ def ingest_batch(batch_size: int = 100, reset: bool = False) -> dict[str, object
             if row is None:
                 break
 
-            current_limit = min(100, batch_size - processed)
+            current_limit = min(fetch_limit, requested_batch_size - processed)
             results = fetch_page_batch(config, row["space"], int(row["next_start"]), current_limit)
-            upsert_page_records(conn, [page_record(config, item) for item in results])
-            processed += len(results)
             touched_spaces.append(row["space"])
-
-            completed = len(results) < current_limit
-            next_start = int(row["next_start"]) + len(results)
-            conn.execute(
-                """
-                UPDATE ingest_progress
-                SET next_start = ?, completed = ?, updated_at = ?
-                WHERE space = ?
-                """,
-                (next_start, completed, utc_now_text(), row["space"]),
-            )
-            conn.commit()
             if not results:
+                conn.execute(
+                    """
+                    UPDATE ingest_progress
+                    SET completed = ?, status = ?, message = ?, updated_at = ?
+                    WHERE space = ?
+                    """,
+                    (True, "completed", "스페이스 수집 완료", utc_now_text(), row["space"]),
+                )
+                conn.commit()
                 continue
+
+            next_start = int(row["next_start"])
+            for item in results:
+                upsert_page_records(conn, [page_record(config, item)])
+                processed += 1
+                next_start += 1
+                conn.execute(
+                    """
+                    UPDATE ingest_progress
+                    SET next_start = ?, completed = ?, status = ?, message = ?, updated_at = ?
+                    WHERE space = ?
+                    """,
+                    (next_start, False, "running", f"{next_start}번째 위치까지 저장", utc_now_text(), row["space"]),
+                )
+                conn.commit()
+                should_pause, pause_reason = should_pause_ingest(started_at, processed)
+                if should_pause or processed >= requested_batch_size:
+                    break
+
+            if pause_reason or processed >= requested_batch_size:
+                break
+
+            if len(results) < current_limit:
+                conn.execute(
+                    """
+                    UPDATE ingest_progress
+                    SET completed = ?, status = ?, message = ?, updated_at = ?
+                    WHERE space = ?
+                    """,
+                    (True, "completed", "스페이스 수집 완료", utc_now_text(), row["space"]),
+                )
+                conn.commit()
+
         status = ingest_progress_status(conn)
+        if pause_reason:
+            active_space = status.get("active_space")
+            if active_space:
+                conn.execute(
+                    """
+                    UPDATE ingest_progress
+                    SET status = ?, message = ?, updated_at = ?
+                    WHERE space = ?
+                    """,
+                    ("paused", pause_reason, utc_now_text(), active_space),
+                )
+                conn.commit()
+                status = ingest_progress_status(conn)
         return {
-            "status": "completed" if status["completed"] else "running",
-            "batch_size": batch_size,
+            "status": "completed" if status["completed"] else "paused" if pause_reason else "running",
+            "batch_size": requested_batch_size,
+            "fetch_limit": fetch_limit,
             "processed": processed,
+            "pause_reason": pause_reason,
+            "elapsed_seconds": round(time.monotonic() - started_at, 1),
+            "memory": ingest_memory_status(),
             "touched_spaces": sorted(set(touched_spaces)),
             "progress": status,
         }
@@ -1023,6 +1154,7 @@ def question_tokens(text: str) -> list[str]:
     )
 
 
+@lru_cache(maxsize=2048)
 def context_profile(question: str) -> QueryContext:
     tokens = question_tokens(question)
     normalized = compact_text(question)

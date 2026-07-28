@@ -57,6 +57,29 @@ def ask_cache_ttl_seconds() -> int:
         return 600
 
 
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def ingest_safety_config() -> dict[str, object]:
+    return {
+        "fetch_limit": env_int("INGEST_FETCH_LIMIT", 20),
+        "time_budget_seconds": env_float("INGEST_BATCH_TIME_BUDGET_SECONDS", 20),
+        "memory_soft_limit_mb": env_float("INGEST_MEMORY_SOFT_LIMIT_MB", 420),
+        "max_page_text_chars": env_int("INGEST_MAX_PAGE_TEXT_CHARS", 450000),
+    }
+
+
 def ask_cache_key(question: str, search_mode: str) -> str:
     return json.dumps(
         {"question": " ".join(question.lower().split()), "mode": search_mode},
@@ -257,6 +280,7 @@ def page_stats(conn: sqlite3.Connection) -> dict[str, object]:
             "ask_cache_entries": len(ASK_CACHE),
             "ask_cache_ttl_seconds": ask_cache_ttl_seconds(),
         },
+        "ingest_safety": ingest_safety_config(),
         "database": "postgres" if uses_postgres else "sqlite",
         "persistence": {
             "uses_persistent_database": uses_postgres,
@@ -832,6 +856,7 @@ def admin_diagnostics():
                     config.official_spaces or config.space_weights or config.document_type_weights
                 ),
             },
+            "ingest_safety": ingest_safety_config(),
             "config": {
                 "base_url_set": bool(config.base_url),
                 "email_set": bool(config.email),

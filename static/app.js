@@ -337,7 +337,10 @@ function renderIngestProgress(progress) {
   const percent = total ? Math.round((completed / total) * 100) : 0;
   ingestProgressBar.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
   const active = progress.active_space ? ` · 현재 ${progress.active_space}` : "";
-  ingestProgressDetail.textContent = `스페이스 ${completed}/${total} 완료 · 색인 위치 ${progress.indexed_offsets ?? 0}${active}`;
+  const memory = progress.memory || {};
+  const memoryLabel = memory.rss_mb ? ` · 메모리 ${memory.rss_mb}/${memory.soft_limit_mb || "-"}MB` : "";
+  const message = progress.last_message ? ` · ${progress.last_message}` : "";
+  ingestProgressDetail.textContent = `스페이스 ${completed}/${total} 완료 · 색인 위치 ${progress.indexed_offsets ?? 0}${active}${memoryLabel}${message}`;
 }
 
 function renderStats(payload) {
@@ -347,6 +350,7 @@ function renderStats(payload) {
   const weightConfig = payload.weights || {};
   const persistence = payload.persistence || {};
   const searchHealth = payload.search_health || {};
+  const ingestSafety = payload.ingest_safety || {};
   const feedback = payload.feedback || {};
   const rankingConfigured = Boolean(
     (weightConfig.official_spaces || []).length ||
@@ -368,6 +372,8 @@ function renderStats(payload) {
     <div><strong>${escapeText(String(searchHealth.chunks_per_page ?? 0))}</strong><span>chunk/page</span></div>
     <div><strong>${escapeText(String(searchHealth.ask_cache_entries ?? 0))}</strong><span>검색캐시</span></div>
     <div><strong>${Number(feedback.useful || 0)}/${Number(feedback.bad || 0)}</strong><span>피드백</span></div>
+    <div><strong>${escapeText(String(ingestSafety.fetch_limit ?? 20))}</strong><span>수집 fetch</span></div>
+    <div><strong>${escapeText(String(ingestSafety.memory_soft_limit_mb ?? 420))}</strong><span>메모리MB</span></div>
   `;
   renderIngestProgress(ingest.progress);
   if (!persistence.uses_persistent_database && !persistenceWarningShown) {
@@ -431,6 +437,7 @@ function renderDiagnostics(payload) {
   const config = payload.config || {};
   const progress = payload.ingest_progress || {};
   const searchHealth = payload.search_health || {};
+  const ingestSafety = payload.ingest_safety || {};
   const missing = [
     ["URL", config.base_url_set],
     ["이메일", config.email_set],
@@ -445,7 +452,8 @@ function renderDiagnostics(payload) {
     `${errorPrefix}점검 ${payload.status} · DB ${payload.database} · 문서 ${counts.pages ?? 0} · chunk ${counts.chunks ?? 0} · ` +
     `${configLabel} · ${persistence}${dbHost}${dbUrlHint} · 인덱스 ${indexHealthLabel(searchHealth.index_health)} · ` +
     `chunk/page ${searchHealth.chunks_per_page ?? 0} · 공식공간 ${searchHealth.official_spaces_configured ? "설정" : "미설정"} · ` +
-    `스페이스 ${progress.completed_spaces ?? 0}/${progress.total_spaces ?? 0}`
+    `스페이스 ${progress.completed_spaces ?? 0}/${progress.total_spaces ?? 0} · ` +
+    `수집 fetch ${ingestSafety.fetch_limit ?? "-"} · 메모리 ${progress.memory?.rss_mb ?? "-"}MB/${ingestSafety.memory_soft_limit_mb ?? "-"}MB`
   );
   renderIngestProgress(progress);
 }
@@ -1330,10 +1338,16 @@ async function runBatchLoop({ reset = false } = {}) {
       totalProcessed += Number(payload.processed || 0);
       finalStatus = payload.status || finalStatus;
       renderIngestProgress(payload.progress);
-      renderOpsStatus(`배치 ${batch} · 이번 ${payload.processed}개 · 누적 ${totalProcessed}개 · 상태 ${payload.status}`);
+      const pauseLabel = payload.pause_reason ? ` · ${payload.pause_reason}` : "";
+      const memoryLabel = payload.memory?.rss_mb ? ` · 메모리 ${payload.memory.rss_mb}MB` : "";
+      renderOpsStatus(`배치 ${batch} · 이번 ${payload.processed}개 · 누적 ${totalProcessed}개 · 상태 ${payload.status}${memoryLabel}${pauseLabel}`);
       await loadStats();
       if (payload.status === "completed") {
         renderOpsStatus(`수집 완료 · 누적 처리 ${totalProcessed}개`);
+        break;
+      }
+      if (payload.status === "paused") {
+        renderOpsStatus(`안전 일시정지 · 누적 처리 ${totalProcessed}개 · 다음 배치에서 중단 지점부터 이어서 수집합니다.${pauseLabel}`);
         break;
       }
       if (!payload.processed) {
