@@ -1845,6 +1845,58 @@ def term_score(
     return score, matched
 
 
+def safe_fetchall(conn, sql: str, params: Iterable[object]) -> list:
+    try:
+        return conn.execute(sql, params).fetchall()
+    except Exception:
+        if hasattr(conn, "rollback"):
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        return []
+
+
+def fast_fallback_rows(conn, query: str, limit: int = 8) -> list:
+    terms = [
+        term
+        for term in ordered_unique([*essential_terms(query), *question_tokens(query)])
+        if len(term) >= 2 and term not in INTENT_ONLY_TERMS
+    ][:5]
+    if not terms:
+        terms = extract_terms(query)[:5]
+    rows_by_id = {}
+    for term in terms[:4]:
+        like = f"%{term}%"
+        rows = safe_fetchall(
+            conn,
+            """
+            SELECT page_id, chunk_index, title, text, created_at, last_updated, author, space, url
+            FROM page_chunks
+            WHERE LOWER(title) LIKE ?
+            LIMIT ?
+            """,
+            (like, max(limit * 3, 18)),
+        )
+        rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in rows})
+        if len(rows_by_id) >= limit:
+            break
+    if len(rows_by_id) < limit and terms:
+        like = f"%{terms[0]}%"
+        rows = safe_fetchall(
+            conn,
+            """
+            SELECT page_id, chunk_index, title, text, created_at, last_updated, author, space, url
+            FROM page_chunks
+            WHERE LOWER(text) LIKE ?
+            LIMIT ?
+            """,
+            (like, max(limit * 2, 12)),
+        )
+        rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in rows})
+    return list(rows_by_id.values())[: max(limit * 3, 18)]
+
+
 def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float | None = None) -> list[SearchHit]:
     config = load_config()
     terms = extract_terms(query)
@@ -1880,7 +1932,8 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
         strict_terms = ordered_unique([*profile.subjects[:4], *profile.constraints[:2]])
         if strict_terms:
             try:
-                strict_rows = conn.execute(
+                strict_rows = safe_fetchall(
+                    conn,
                     """
                     SELECT c.page_id, c.chunk_index, c.title, c.text, c.created_at, c.last_updated, c.author, c.space, c.url
                     FROM page_chunks_fts
@@ -1890,12 +1943,13 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
                     LIMIT ?
                     """,
                     (fts_query_for_terms(strict_terms, operator="AND"), max(limit * 7, 36)),
-                ).fetchall()
+                )
                 rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in strict_rows})
             except sqlite3.OperationalError:
                 pass
         try:
-            fts_rows = conn.execute(
+            fts_rows = safe_fetchall(
+                conn,
                 """
                 SELECT c.page_id, c.chunk_index, c.title, c.text, c.created_at, c.last_updated, c.author, c.space, c.url
                 FROM page_chunks_fts
@@ -1905,7 +1959,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
                 LIMIT ?
                 """,
                 (fts_query(query), max(limit * 8, 42)),
-            ).fetchall()
+            )
             rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in fts_rows})
         except sqlite3.OperationalError:
             pass
@@ -1928,7 +1982,8 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
             phrase_clauses.append("(LOWER(title) LIKE ? OR LOWER(text) LIKE ?)")
             like = f"%{phrase}%"
             phrase_params.extend([like, like])
-        phrase_rows = conn.execute(
+        phrase_rows = safe_fetchall(
+            conn,
             f"""
             SELECT page_id, chunk_index, title, text, created_at, last_updated, author, space, url
             FROM page_chunks
@@ -1937,7 +1992,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
             LIMIT ?
             """,
             [*phrase_params, max(limit * 7, 42)],
-        ).fetchall()
+        )
         rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in phrase_rows})
 
     if deadline and time.monotonic() >= deadline:
@@ -1951,7 +2006,8 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
             strict_clauses.append("(LOWER(title) LIKE ? OR LOWER(text) LIKE ?)")
             like = f"%{term}%"
             strict_params.extend([like, like])
-        strict_rows = conn.execute(
+        strict_rows = safe_fetchall(
+            conn,
             f"""
             SELECT page_id, chunk_index, title, text, created_at, last_updated, author, space, url
             FROM page_chunks
@@ -1960,7 +2016,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
             LIMIT ?
             """,
             [*strict_params, max(limit * 8, 48)],
-        ).fetchall()
+        )
         rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in strict_rows})
 
     for term in candidate_terms:
@@ -1970,7 +2026,8 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
 
     if like_clauses:
         order_clause = "" if uses_postgres else "ORDER BY last_updated DESC"
-        like_rows = conn.execute(
+        like_rows = safe_fetchall(
+            conn,
             f"""
             SELECT page_id, chunk_index, title, text, created_at, last_updated, author, space, url
             FROM page_chunks
@@ -1979,8 +2036,11 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
             LIMIT ?
             """,
             [*params, max_candidates],
-        ).fetchall()
+        )
         rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in like_rows})
+
+    if not rows_by_id:
+        rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in fast_fallback_rows(conn, query, limit)})
 
     hits = []
     for row in rows_by_id.values():
@@ -1992,6 +2052,12 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
         matched = ordered_unique([*semantic_matched, *keyword_matched])
         if matched and score > -20:
             hits.append(row_to_hit(row, score, matched))
+    if not hits and rows_by_id:
+        fallback_terms = essential_terms(query)[:8] or question_tokens(query)[:8]
+        for row in list(rows_by_id.values())[:limit]:
+            matched = [term for term in fallback_terms if term_in_text(term, row["title"]) or term_in_text(term, row["text"])]
+            if matched:
+                hits.append(row_to_hit(row, recency_boost(row["last_updated"]) + len(matched) * 6.0, matched))
     return sorted(hits, key=lambda hit: (hit.score, hit.last_updated), reverse=True)[:limit]
 
 
@@ -2229,7 +2295,7 @@ def merged_hits(conn: sqlite3.Connection, question: str, mode: str = "balanced")
     mode = mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced"
     by_id: dict[tuple[str, int], SearchHit] = {}
     votes: dict[tuple[str, int], int] = {}
-    deadline = time.monotonic() + max(1.5, parse_float_env("SEARCH_TIME_BUDGET_SECONDS", 3.8))
+    deadline = time.monotonic() + max(1.5, parse_float_env("SEARCH_TIME_BUDGET_SECONDS", 4.8))
     per_query_limit = 8 if mode == "broad" else 6 if mode == "recent" else 5
     queries = derive_queries(question, mode)
     queries = queries[:5 if mode == "broad" else 4]
@@ -2250,6 +2316,15 @@ def merged_hits(conn: sqlite3.Connection, question: str, mode: str = "balanced")
         for key, hit in by_id.items()
     ]
     if time.monotonic() >= deadline:
+        if not consensus_hits:
+            fallback_rows = fast_fallback_rows(conn, question, limit=8)
+            fallback_hits = []
+            fallback_terms = essential_terms(question)[:8] or question_tokens(question)[:8]
+            for row in fallback_rows:
+                matched = [term for term in fallback_terms if term_in_text(term, row["title"]) or term_in_text(term, row["text"])]
+                if matched:
+                    fallback_hits.append(row_to_hit(row, recency_boost(row["last_updated"]) + len(matched) * 6.0, matched))
+            return diversify_hits(sorted(fallback_hits, key=lambda hit: (hit.score, hit.last_updated), reverse=True), limit=10, per_page_limit=1)
         ranked_timeout_hits = sorted(consensus_hits, key=lambda hit: (hit.score, hit.last_updated), reverse=True)
         return diversify_hits(ranked_timeout_hits, limit=10, per_page_limit=1)
     adjusted_hits = apply_recent_repeat_penalties(
