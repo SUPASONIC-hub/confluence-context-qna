@@ -37,7 +37,8 @@ const opsStatus = document.querySelector("#opsStatus");
 const ingestProgressBar = document.querySelector("#ingestProgressBar");
 const ingestProgressDetail = document.querySelector("#ingestProgressDetail");
 
-const BATCH_SIZE = 80;
+const BATCH_SIZE = 40;
+const INGEST_PAUSE_COOLDOWN_MS = 4000;
 const CLIENT_DB_NAME = "confluence-qna-client-backup";
 const CLIENT_DB_VERSION = 1;
 const CLIENT_STORE = "keyval";
@@ -373,7 +374,7 @@ function renderStats(payload) {
     <div><strong>${escapeText(String(searchHealth.ask_cache_entries ?? 0))}</strong><span>검색캐시</span></div>
     <div><strong>${Number(feedback.useful || 0)}/${Number(feedback.bad || 0)}</strong><span>피드백</span></div>
     <div><strong>${escapeText(String(ingestSafety.fetch_limit ?? 20))}</strong><span>수집 fetch</span></div>
-    <div><strong>${escapeText(String(ingestSafety.memory_soft_limit_mb ?? 420))}</strong><span>메모리MB</span></div>
+    <div><strong>${escapeText(String(ingestSafety.memory_soft_limit_mb ?? 360))}</strong><span>메모리MB</span></div>
   `;
   renderIngestProgress(ingest.progress);
   if (!persistence.uses_persistent_database && !persistenceWarningShown) {
@@ -1327,6 +1328,7 @@ async function runBatchLoop({ reset = false } = {}) {
   renderOpsStatus(reset ? "처음부터 수집 실행 중" : "배치 수집 실행 중");
   let totalProcessed = 0;
   let finalStatus = "running";
+  let consecutivePauses = 0;
   try {
     for (let batch = 1; batch <= 30; batch += 1) {
       if (stopBatchRequested) break;
@@ -1337,6 +1339,9 @@ async function runBatchLoop({ reset = false } = {}) {
       });
       totalProcessed += Number(payload.processed || 0);
       finalStatus = payload.status || finalStatus;
+      consecutivePauses = payload.status === "paused" && Number(payload.processed || 0) === 0
+        ? consecutivePauses + 1
+        : 0;
       renderIngestProgress(payload.progress);
       const pauseLabel = payload.pause_reason ? ` · ${payload.pause_reason}` : "";
       const memoryLabel = payload.memory?.rss_mb ? ` · 메모리 ${payload.memory.rss_mb}MB` : "";
@@ -1347,8 +1352,13 @@ async function runBatchLoop({ reset = false } = {}) {
         break;
       }
       if (payload.status === "paused") {
-        renderOpsStatus(`안전 일시정지 · 누적 처리 ${totalProcessed}개 · 다음 배치에서 중단 지점부터 이어서 수집합니다.${pauseLabel}`);
-        break;
+        if (consecutivePauses >= 5) {
+          renderOpsStatus(`안전 일시정지 유지 · 진행 없이 5회 반복되어 중단합니다.${pauseLabel}`);
+          break;
+        }
+        renderOpsStatus(`안전 일시정지 · 누적 처리 ${totalProcessed}개 · ${INGEST_PAUSE_COOLDOWN_MS / 1000}초 후 저장 지점부터 자동 재개합니다.${pauseLabel}`);
+        await new Promise((resolve) => setTimeout(resolve, INGEST_PAUSE_COOLDOWN_MS));
+        continue;
       }
       if (!payload.processed) {
         renderOpsStatus(`추가 처리 문서 없음 · 누적 처리 ${totalProcessed}개 · 상태 ${payload.status}`);

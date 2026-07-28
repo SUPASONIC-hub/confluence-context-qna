@@ -74,10 +74,31 @@ def env_float(name: str, default: float) -> float:
 def ingest_safety_config() -> dict[str, object]:
     return {
         "fetch_limit": env_int("INGEST_FETCH_LIMIT", 20),
-        "time_budget_seconds": env_float("INGEST_BATCH_TIME_BUDGET_SECONDS", 20),
-        "memory_soft_limit_mb": env_float("INGEST_MEMORY_SOFT_LIMIT_MB", 420),
+        "batch_max_size": env_int("INGEST_BATCH_MAX_SIZE", 40),
+        "time_budget_seconds": env_float("INGEST_BATCH_TIME_BUDGET_SECONDS", 12),
+        "memory_soft_limit_mb": env_float("INGEST_MEMORY_SOFT_LIMIT_MB", 360),
         "max_page_text_chars": env_int("INGEST_MAX_PAGE_TEXT_CHARS", 450000),
     }
+
+
+def bounded_ingest_batch_size(raw_value, safety: dict[str, object]) -> int:
+    try:
+        requested = int(raw_value)
+    except (TypeError, ValueError):
+        requested = int(safety["fetch_limit"] or 20)
+    return max(1, min(requested, int(safety["batch_max_size"])))
+
+
+def service_pressure_status() -> dict[str, object]:
+    try:
+        from confluence_qna import ingest_memory_status
+
+        memory = ingest_memory_status()
+    except Exception:
+        memory = {"rss_mb": 0.0, "soft_limit_mb": ingest_safety_config()["memory_soft_limit_mb"], "near_limit": False}
+    with INGEST_LOCK:
+        ingest_running = bool(INGEST_STATE.get("running"))
+    return {"memory": memory, "ingest_running": ingest_running}
 
 
 def ask_cache_key(question: str, search_mode: str) -> str:
@@ -530,7 +551,14 @@ def index():
 
 @app.get("/healthz")
 def healthz():
-    return jsonify({"status": "ok"})
+    return Response("ok\n", mimetype="text/plain")
+
+
+@app.get("/readyz")
+def readyz():
+    pressure = service_pressure_status()
+    status = 503 if pressure["memory"].get("near_limit") else 200
+    return jsonify({"status": "degraded" if status == 503 else "ready", **pressure}), status
 
 
 @app.get("/favicon.ico")
@@ -613,6 +641,9 @@ def history_detail(history_id: int):
 @app.post("/api/ask")
 def ask_api():
     init_history_table()
+    pressure = service_pressure_status()
+    if pressure["memory"].get("near_limit"):
+        return jsonify({"error": "server memory pressure; retry shortly", "pressure": pressure}), 503
     payload = request.get_json(silent=True) or {}
     question = str(payload.get("question", "")).strip()
     search_mode = str(payload.get("search_mode", "balanced")).strip() or "balanced"
@@ -743,9 +774,28 @@ def ingest_api():
     if auth_error:
         return auth_error
     payload = request.get_json(silent=True) or {}
+    if not payload.get("legacy_full"):
+        safety = ingest_safety_config()
+        batch_size = bounded_ingest_batch_size(payload.get("batch_size") or payload.get("limit"), safety)
+        reset = bool(payload.get("reset"))
+        pressure = service_pressure_status()
+        if pressure["memory"].get("near_limit"):
+            return jsonify(
+                {
+                    "status": "paused",
+                    "processed": 0,
+                    "pause_reason": "서버 메모리 압박 상태라 새 수집 배치를 시작하지 않았습니다.",
+                    "memory": pressure["memory"],
+                }
+            ), 202
+        result = ingest_batch(batch_size=batch_size, reset=reset)
+        if result.get("processed") or result.get("status") == "completed":
+            clear_ask_cache()
+        return jsonify({**result, "safe_batch": True})
+
     raw_limit = payload.get("limit", 100)
     limit = None if raw_limit in (None, "", 0, "0", "all") else int(raw_limit)
-    async_mode = bool(payload.get("async", limit is None))
+    async_mode = bool(payload.get("async", False))
 
     if async_mode:
         with INGEST_LOCK:
@@ -780,9 +830,19 @@ def ingest_batch_api():
     if auth_error:
         return auth_error
     payload = request.get_json(silent=True) or {}
-    batch_size = int(payload.get("batch_size") or 80)
+    safety = ingest_safety_config()
+    batch_size = bounded_ingest_batch_size(payload.get("batch_size"), safety)
     reset = bool(payload.get("reset"))
-    batch_size = max(1, min(batch_size, 100))
+    pressure = service_pressure_status()
+    if pressure["memory"].get("near_limit"):
+        return jsonify(
+            {
+                "status": "paused",
+                "processed": 0,
+                "pause_reason": "서버 메모리 압박 상태라 새 수집 배치를 시작하지 않았습니다.",
+                "memory": pressure["memory"],
+            }
+        ), 202
     try:
         result = ingest_batch(batch_size=batch_size, reset=reset)
         if result.get("processed") or result.get("status") == "completed":

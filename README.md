@@ -32,8 +32,9 @@ SLOW_SEARCH_MS=6500
 ASK_CACHE_TTL_SECONDS=600
 SEARCH_MAX_CANDIDATES=120
 INGEST_FETCH_LIMIT=20
-INGEST_BATCH_TIME_BUDGET_SECONDS=20
-INGEST_MEMORY_SOFT_LIMIT_MB=420
+INGEST_BATCH_MAX_SIZE=40
+INGEST_BATCH_TIME_BUDGET_SECONDS=12
+INGEST_MEMORY_SOFT_LIMIT_MB=360
 INGEST_MAX_PAGE_TEXT_CHARS=450000
 ```
 
@@ -46,6 +47,7 @@ INGEST_MAX_PAGE_TEXT_CHARS=450000
 `SEARCH_MAX_CANDIDATES`는 쿼리별 재랭킹 후보 상한입니다. 문서가 많은 환경에서 검색 응답이 느리면 72-96 범위로 낮춰 보세요.
 `ASK_CACHE_TTL_SECONDS`는 같은 질문/검색 모드 재실행 시 서버 메모리 캐시를 유지하는 시간입니다. 반복 질문이나 502 후 재시도 비용을 줄입니다.
 `INGEST_FETCH_LIMIT`는 Confluence API에서 한 번에 가져오는 페이지 수입니다. Render 메모리가 빠듯하면 10-20을 권장합니다.
+`INGEST_BATCH_MAX_SIZE`는 브라우저나 외부 호출이 한 번에 요청할 수 있는 최대 수집 페이지 수입니다. 긴 요청으로 `/healthz`가 밀리지 않도록 40 이하를 권장합니다.
 `INGEST_BATCH_TIME_BUDGET_SECONDS`와 `INGEST_MEMORY_SOFT_LIMIT_MB`에 닿으면 수집 API는 `paused`로 반환하고, 이미 저장한 페이지의 다음 위치부터 다음 배치에서 자동 재개합니다.
 `INGEST_MAX_PAGE_TEXT_CHARS`는 비정상적으로 큰 페이지 본문이 수집 프로세스와 DB를 압박하지 않도록 페이지별 검색 본문을 제한합니다.
 `요청 실패: 502 Render gateway error`가 표시되면 배포/재시작 중이거나 검색 후보가 많아 요청 시간이 길어진 상태일 수 있습니다. 앱은 `/api/ask`를 한 번 재시도하고, 실패 시 히스토리/통계를 다시 확인합니다.
@@ -111,7 +113,7 @@ Render 설정:
 
 ```text
 Build Command: pip install -r requirements.txt
-Start Command: gunicorn app:app
+Start Command: gunicorn app:app --worker-class gthread --workers 1 --threads 4 --timeout 60 --graceful-timeout 20 --keep-alive 5
 Health Check Path: /healthz
 ```
 
@@ -143,7 +145,7 @@ Invoke-RestMethod -Method Post `
   -Uri "https://YOUR-SERVICE.onrender.com/api/ingest/batch" `
   -Headers @{ "X-Admin-Token" = "ADMIN_TOKEN_VALUE" } `
   -ContentType "application/json" `
-  -Body '{"batch_size":80}'
+  -Body '{"batch_size":40}'
 ```
 
 수집 상태 확인:
@@ -158,7 +160,7 @@ https://YOUR-SERVICE.onrender.com/api/ingest/status
 https://YOUR-SERVICE.onrender.com/api/admin/diagnostics
 ```
 
-브라우저 운영 패널에서는 관리자 토큰 저장 후 `배치 수집`으로 이어서 수집하고, `처음부터 수집`으로 저장된 수집 진행 위치를 0부터 다시 계산합니다. 기본 배치 크기는 80개이며, 한 배치의 DB 저장을 묶어서 처리합니다. 기존 문서는 삭제하지 않고 upsert로 최신 내용으로 갱신합니다.
+브라우저 운영 패널에서는 관리자 토큰 저장 후 `배치 수집`으로 이어서 수집하고, `처음부터 수집`으로 저장된 수집 진행 위치를 0부터 다시 계산합니다. 서버는 페이지 단위로 저장 지점을 커밋하고, 메모리/시간 예산에 닿으면 잠시 반환한 뒤 다음 배치에서 자동 재개합니다. 기존 문서는 삭제하지 않고 upsert로 최신 내용으로 갱신합니다.
 `관리자 토큰 필요`가 표시되면 Render의 `ADMIN_TOKEN`과 같은 값을 운영 패널에 저장한 뒤 배치 수집을 실행합니다.
 
 CSV 백업:
@@ -224,6 +226,7 @@ ADMIN_TOKEN=Render에 설정한 ADMIN_TOKEN
 - 검색 시간 예산, 느린 검색 표시, Render 502 복구 안내
 - 같은 질문/모드 서버 캐시와 수집/복원 시 캐시 무효화
 - 수집 페이지 단위 커밋, 진행 지점 저장, 메모리/시간 소프트 리밋 기반 안전 일시정지
+- Gunicorn gthread worker와 초경량 `/healthz`로 긴 수집 중에도 Render health check 응답 유지
 - 핵심어 근접도와 제목 매칭 기반 검색 점수 보정
 - 다중 쿼리 검색 후보 생성
 - 균형/정밀/넓게/최신 검색 모드

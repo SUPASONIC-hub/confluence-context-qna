@@ -4,7 +4,7 @@ services:
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --worker-class gthread --workers 1 --threads 4 --timeout 60 --graceful-timeout 20 --keep-alive 5
     autoDeploy: true
     healthCheckPath: /healthz
     envVars:
@@ -36,10 +36,12 @@ services:
         value: "120"
       - key: INGEST_FETCH_LIMIT
         value: "20"
+      - key: INGEST_BATCH_MAX_SIZE
+        value: "40"
       - key: INGEST_BATCH_TIME_BUDGET_SECONDS
-        value: "20"
+        value: "12"
       - key: INGEST_MEMORY_SOFT_LIMIT_MB
-        value: "420"
+        value: "360"
       - key: INGEST_MAX_PAGE_TEXT_CHARS
         value: "450000"
       - key: DATABASE_URL
