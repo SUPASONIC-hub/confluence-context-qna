@@ -205,14 +205,19 @@ def connect_postgres(database_url: str) -> PostgresConnection:
     conn = PostgresConnection(raw_conn)
     schema_timeout_ms = max(1000, parse_int_env("DB_SCHEMA_TIMEOUT_MS", 15000))
     statement_timeout_ms = max(1000, parse_int_env("DB_STATEMENT_TIMEOUT_MS", 4500))
-    conn.execute("SET statement_timeout = ?", (schema_timeout_ms,))
+    set_postgres_statement_timeout(conn, schema_timeout_ms)
     if not POSTGRES_SCHEMA_READY:
         with POSTGRES_SCHEMA_LOCK:
             if not POSTGRES_SCHEMA_READY:
                 ensure_postgres_schema(conn)
                 POSTGRES_SCHEMA_READY = True
-    conn.execute("SET statement_timeout = ?", (statement_timeout_ms,))
+    set_postgres_statement_timeout(conn, statement_timeout_ms)
     return conn
+
+
+def set_postgres_statement_timeout(conn: PostgresConnection, timeout_ms: int) -> None:
+    safe_timeout_ms = max(1000, min(int(timeout_ms), 120000))
+    conn.execute(f"SET statement_timeout = {safe_timeout_ms}")
 
 
 def ensure_postgres_schema(conn: PostgresConnection) -> None:
