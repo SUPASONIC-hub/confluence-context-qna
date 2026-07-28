@@ -1361,7 +1361,9 @@ def best_context_sentence_match(text: str, profile: QueryContext) -> tuple[float
         return 0.0, []
     best_score = 0.0
     best_hits: list[str] = []
-    for sentence in sentence_units(text)[:18]:
+    scan_limit = max(4, parse_int_env("SEARCH_SENTENCE_SCAN_LIMIT", 8))
+    scan_chars = max(1200, parse_int_env("SEARCH_TEXT_SCAN_CHARS", 3600))
+    for sentence in sentence_units(text[:scan_chars])[:scan_limit]:
         hits = []
         covered_groups = 0
         for group in important_groups:
@@ -1454,7 +1456,9 @@ def weighted_token_overlap(query_tokens: Iterable[str], doc_tokens: Iterable[str
 
 def best_sentence_overlap(query_tokens: list[str], text: str) -> float:
     best = 0.0
-    for sentence in sentence_units(text)[:14]:
+    scan_limit = max(4, parse_int_env("SEARCH_SENTENCE_SCAN_LIMIT", 8))
+    scan_chars = max(1200, parse_int_env("SEARCH_TEXT_SCAN_CHARS", 3600))
+    for sentence in sentence_units(text[:scan_chars])[:scan_limit]:
         score = weighted_token_overlap(query_tokens, semantic_tokens(sentence))
         if score > best:
             best = score
@@ -2225,7 +2229,7 @@ def merged_hits(conn: sqlite3.Connection, question: str, mode: str = "balanced")
     mode = mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced"
     by_id: dict[tuple[str, int], SearchHit] = {}
     votes: dict[tuple[str, int], int] = {}
-    deadline = time.monotonic() + max(1.5, parse_float_env("SEARCH_TIME_BUDGET_SECONDS", 4.2))
+    deadline = time.monotonic() + max(1.5, parse_float_env("SEARCH_TIME_BUDGET_SECONDS", 3.8))
     per_query_limit = 8 if mode == "broad" else 6 if mode == "recent" else 5
     queries = derive_queries(question, mode)
     queries = queries[:5 if mode == "broad" else 4]
@@ -2245,6 +2249,9 @@ def merged_hits(conn: sqlite3.Connection, question: str, mode: str = "balanced")
         replace(hit, score=hit.score + min(max(votes.get(key, 1) - 1, 0), 4) * 2.8)
         for key, hit in by_id.items()
     ]
+    if time.monotonic() >= deadline:
+        ranked_timeout_hits = sorted(consensus_hits, key=lambda hit: (hit.score, hit.last_updated), reverse=True)
+        return diversify_hits(ranked_timeout_hits, limit=10, per_page_limit=1)
     adjusted_hits = apply_recent_repeat_penalties(
         conn,
         apply_feedback_adjustments(conn, apply_page_support_boosts(consensus_hits)),
@@ -2259,16 +2266,17 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
     keywords = essential_terms(question)[:10] or extract_terms(question)[:10]
     profile = context_profile(question)
     context = query_context_summary(question)
+    diagnostic_hits = page_hits[:6]
     context_coverages = [
         context_match_score(hit.title, hit.text, profile)[2].get("context_coverage", 0.0)
-        for hit in page_hits[:8]
+        for hit in diagnostic_hits
     ]
     context_coverage = round(sum(float(value) for value in context_coverages) / max(len(context_coverages), 1), 2) if context_coverages else 0.0
     official_count = sum(1 for hit in page_hits if hit.document_type in {"정책", "매뉴얼", "결정사항"})
     stale_count = sum(1 for hit in page_hits if recency_boost(hit.last_updated) < 0)
-    title_body_distribution = match_scope_distribution(page_hits, keywords)
-    scope_coverage = match_scope_coverage(page_hits, keywords)
-    context_gaps = query_context_gaps(page_hits, profile)
+    title_body_distribution = match_scope_distribution(diagnostic_hits, keywords)
+    scope_coverage = match_scope_coverage(diagnostic_hits, keywords)
+    context_gaps = query_context_gaps(diagnostic_hits, profile)
     matched_keywords = {
         keyword
         for hit in hits

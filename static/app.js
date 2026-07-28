@@ -280,7 +280,7 @@ function shouldRetryFetch(response, options) {
 
 async function fetchJson(url, options) {
   const method = String(options?.method || "GET").toUpperCase();
-  const attempts = Number(options?.retryAttempts || (method === "GET" ? 3 : options?.retryPostPath === "/api/ask" ? 2 : 1));
+  const attempts = Number(options?.retryAttempts || (method === "GET" ? 3 : 1));
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {

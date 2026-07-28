@@ -27,13 +27,19 @@ services:
       - key: ADMIN_TOKEN
         sync: false
       - key: SEARCH_TIME_BUDGET_SECONDS
-        value: "8"
+        value: "3.8"
       - key: SLOW_SEARCH_MS
-        value: "6500"
+        value: "3800"
       - key: ASK_CACHE_TTL_SECONDS
         value: "600"
       - key: SEARCH_MAX_CANDIDATES
-        value: "120"
+        value: "72"
+      - key: DB_STATEMENT_TIMEOUT_MS
+        value: "3800"
+      - key: SEARCH_SENTENCE_SCAN_LIMIT
+        value: "8"
+      - key: SEARCH_TEXT_SCAN_CHARS
+        value: "3600"
       - key: INGEST_FETCH_LIMIT
         value: "20"
       - key: INGEST_BATCH_MAX_SIZE
