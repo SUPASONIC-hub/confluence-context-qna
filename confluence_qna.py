@@ -928,12 +928,18 @@ def recency_boost(last_updated: str) -> float:
 
 
 def fts_query(text: str) -> str:
+    return fts_query_for_terms(extract_terms(text), operator="OR") or text
+
+
+def fts_query_for_terms(values: Iterable[str], operator: str = "OR") -> str:
     terms = []
-    for term in extract_terms(text):
+    for term in values:
         if re.search(r"[\"'*()]", term):
             continue
         terms.append(term)
-    return " OR ".join(ordered_unique(terms)[:18]) or text
+    safe_terms = ordered_unique(terms)[:18]
+    joiner = " AND " if operator.upper() == "AND" else " OR "
+    return joiner.join(safe_terms)
 
 
 INTENT_KEYWORDS = {
@@ -1773,6 +1779,23 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
     )
 
     if not uses_postgres:
+        strict_terms = ordered_unique([*profile.subjects[:4], *profile.constraints[:2]])
+        if strict_terms:
+            try:
+                strict_rows = conn.execute(
+                    """
+                    SELECT c.page_id, c.chunk_index, c.title, c.text, c.created_at, c.last_updated, c.author, c.space, c.url
+                    FROM page_chunks_fts
+                    JOIN page_chunks c ON c.rowid = page_chunks_fts.rowid
+                    WHERE page_chunks_fts MATCH ?
+                    ORDER BY bm25(page_chunks_fts)
+                    LIMIT ?
+                    """,
+                    (fts_query_for_terms(strict_terms, operator="AND"), max(limit * 7, 36)),
+                ).fetchall()
+                rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in strict_rows})
+            except sqlite3.OperationalError:
+                pass
         try:
             fts_rows = conn.execute(
                 """
@@ -1794,6 +1817,26 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
 
     if not uses_postgres and len(rows_by_id) >= max(limit * 6, 36):
         candidate_terms = candidate_terms[: max(4, min(8, len(essentials) + 3))]
+
+    strict_like_terms = [term for term in profile.subjects[:3] if len(term) >= 2]
+    if strict_like_terms and len(rows_by_id) < max(limit * 5, 30):
+        strict_clauses = []
+        strict_params = []
+        for term in strict_like_terms:
+            strict_clauses.append("(LOWER(title) LIKE ? OR LOWER(text) LIKE ?)")
+            like = f"%{term}%"
+            strict_params.extend([like, like])
+        strict_rows = conn.execute(
+            f"""
+            SELECT page_id, chunk_index, title, text, created_at, last_updated, author, space, url
+            FROM page_chunks
+            WHERE {" AND ".join(strict_clauses)}
+            {"ORDER BY last_updated DESC" if not uses_postgres else ""}
+            LIMIT ?
+            """,
+            [*strict_params, max(limit * 8, 48)],
+        ).fetchall()
+        rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in strict_rows})
 
     for term in candidate_terms:
         like_clauses.append("(LOWER(title) LIKE ? OR LOWER(text) LIKE ?)")
@@ -2012,6 +2055,51 @@ def apply_page_support_boosts(hits: Iterable[SearchHit]) -> list[SearchHit]:
     return boosted
 
 
+def recent_page_frequency_penalty(conn: sqlite3.Connection) -> dict[str, float]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT hits_json
+            FROM query_history
+            ORDER BY id DESC
+            LIMIT 40
+            """
+        ).fetchall()
+    except Exception:
+        return {}
+    counts: dict[str, int] = {}
+    for row in rows:
+        try:
+            hits = json.loads(row["hits_json"] or "[]")
+        except Exception:
+            continue
+        for page_id in ordered_unique(str(hit.get("page_id") or "") for hit in hits[:5] if isinstance(hit, dict)):
+            counts[page_id] = counts.get(page_id, 0) + 1
+    return {
+        page_id: min(max(count - 2, 0) * 0.8, 5.5)
+        for page_id, count in counts.items()
+        if count >= 4
+    }
+
+
+def apply_recent_repeat_penalties(conn: sqlite3.Connection, hits: Iterable[SearchHit], question: str) -> list[SearchHit]:
+    penalties = recent_page_frequency_penalty(conn)
+    if not penalties:
+        return list(hits)
+    profile = context_profile(question)
+    adjusted = []
+    for hit in hits:
+        penalty = penalties.get(hit.page_id, 0.0)
+        if not penalty:
+            adjusted.append(hit)
+            continue
+        _, _, diagnostics = context_match_score(hit.title, hit.text, profile)
+        context_coverage = float(diagnostics.get("context_coverage", 0.0))
+        effective_penalty = penalty * (1.0 - min(context_coverage, 0.85) * 0.7)
+        adjusted.append(replace(hit, score=hit.score - effective_penalty))
+    return adjusted
+
+
 def merged_hits(conn: sqlite3.Connection, question: str, mode: str = "balanced") -> list[SearchHit]:
     mode = mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced"
     by_id: dict[tuple[str, int], SearchHit] = {}
@@ -2036,9 +2124,13 @@ def merged_hits(conn: sqlite3.Connection, question: str, mode: str = "balanced")
         replace(hit, score=hit.score + min(max(votes.get(key, 1) - 1, 0), 4) * 2.8)
         for key, hit in by_id.items()
     ]
-    adjusted_hits = apply_feedback_adjustments(conn, apply_page_support_boosts(consensus_hits))
+    adjusted_hits = apply_recent_repeat_penalties(
+        conn,
+        apply_feedback_adjustments(conn, apply_page_support_boosts(consensus_hits)),
+        question,
+    )
     ranked = sorted(adjusted_hits, key=lambda hit: final_rank_key(hit, question, mode), reverse=True)
-    return diversify_hits(ranked, per_page_limit=3 if mode == "strict" else 2)
+    return diversify_hits(ranked, per_page_limit=2 if mode == "strict" else 1)
 
 
 def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") -> dict[str, object]:
@@ -2053,6 +2145,7 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
     context_coverage = round(sum(float(value) for value in context_coverages) / max(len(context_coverages), 1), 2) if context_coverages else 0.0
     official_count = sum(1 for hit in page_hits if hit.document_type in {"정책", "매뉴얼", "결정사항"})
     stale_count = sum(1 for hit in page_hits if recency_boost(hit.last_updated) < 0)
+    title_body_distribution = match_scope_distribution(page_hits, keywords)
     matched_keywords = {
         keyword
         for hit in hits
@@ -2079,6 +2172,7 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
         "score_margin": score_margin,
         "official_count": official_count,
         "stale_count": stale_count,
+        "match_scope_distribution": title_body_distribution,
         "coverage_ratio": coverage_ratio,
         "missing_keywords": missing_keywords[:6],
         "quality_distribution": quality_distribution,
@@ -2112,6 +2206,24 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
             for doc_type in sorted({hit.document_type for hit in page_hits})
         },
     }
+
+
+def match_scope_distribution(hits: list[SearchHit], keywords: list[str]) -> dict[str, int]:
+    counts = {"title": 0, "body": 0, "title_body": 0, "semantic": 0}
+    for hit in hits:
+        title = compact_text(hit.title)
+        text = compact_text(hit.text)
+        title_hit = any(term in title for term in keywords)
+        body_hit = any(term in text for term in keywords)
+        if title_hit and body_hit:
+            counts["title_body"] += 1
+        elif title_hit:
+            counts["title"] += 1
+        elif body_hit:
+            counts["body"] += 1
+        else:
+            counts["semantic"] += 1
+    return counts
 
 
 def search_quality_issue_code(

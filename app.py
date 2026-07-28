@@ -462,6 +462,9 @@ def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
     coverage = round(len(covered) / max(len(keywords), 1), 2) if keywords else 0
     _, context_signals, context_diagnostics = context_match_score(hit.title, hit.text, profile)
     title = compact_text(hit.title)
+    text = compact_text(hit.text)
+    title_term_hits = [term for term in covered if term in title]
+    body_term_hits = [term for term in covered if term in text and term not in title_term_hits]
     phrase_hits = [phrase for phrase in phrase_candidates(question)[:4] if phrase in title]
     freshness_score = recency_boost(hit.last_updated)
     reasons = []
@@ -475,6 +478,8 @@ def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
         reasons.append("공식 근거 유형")
     if any(term in hit.title for term in covered):
         reasons.append("제목 매칭")
+    elif body_term_hits:
+        reasons.append("본문 매칭")
     if context_signals:
         reasons.append(context_signals[0])
     if not reasons:
@@ -488,6 +493,8 @@ def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
         ranking_signals.append({"label": "문구", "value": "제목 일치"})
     if any(term in hit.title for term in covered):
         ranking_signals.append({"label": "제목", "value": "매칭"})
+    if body_term_hits:
+        ranking_signals.append({"label": "본문", "value": f"{len(body_term_hits)}개"})
     if context_diagnostics.get("context_coverage"):
         ranking_signals.append(
             {"label": "문맥", "value": f"{round(float(context_diagnostics['context_coverage']) * 100)}%"}
@@ -503,6 +510,9 @@ def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
     return {
         "keyword_coverage": coverage,
         "covered_keywords": covered,
+        "title_term_hits": title_term_hits,
+        "body_term_hits": body_term_hits,
+        "match_scope": "title+body" if title_term_hits and body_term_hits else "title" if title_term_hits else "body" if body_term_hits else "semantic",
         "title_phrase_matches": phrase_hits,
         "freshness_score": round(freshness_score, 2),
         "context_coverage": context_diagnostics.get("context_coverage", 0.0),

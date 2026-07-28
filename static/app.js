@@ -532,6 +532,7 @@ function groupHitsByPage(hits) {
       quality: hit.quality || "보통",
       match_reasons: new Set(),
       context_signals: new Set(),
+      match_scopes: new Set(),
       matched_terms: new Set(),
       ranking_signals: new Map(),
       chunks: [],
@@ -547,6 +548,9 @@ function groupHitsByPage(hits) {
     }
     for (const signal of hit.context_signals || []) {
       group.context_signals.add(signal);
+    }
+    if (hit.match_scope) {
+      group.match_scopes.add(hit.match_scope);
     }
     if (String(hit.last_updated || "") > String(group.last_updated || "")) {
       group.last_updated = hit.last_updated;
@@ -566,6 +570,7 @@ function groupHitsByPage(hits) {
     ...group,
     match_reasons: [...group.match_reasons],
     context_signals: [...group.context_signals],
+    match_scopes: [...group.match_scopes],
     matched_terms: [...group.matched_terms],
     ranking_signals: [...group.ranking_signals.entries()].map(([label, value]) => ({ label, value })),
     chunks: sortedHits(group.chunks),
@@ -635,6 +640,7 @@ function renderEvidenceGroup(group, { compact = false, withAnchor = false } = {}
   const contextLabel = `${Math.round(Number(group.context_coverage || 0) * 100)}%`;
   const reasonLabel = group.match_reasons?.[0] || "문맥 유사 후보";
   const stale = Number(group.chunks?.[0]?.freshness_score ?? 0) < 0;
+  const scopeLabel = scopeSummary(group.match_scopes || []);
   return `
     <article class="source-card source-card-group ${compact ? "inline-evidence-card" : ""}${stale ? " source-card-stale" : ""}" ${withAnchor ? `id="${escapeText(anchorId)}"` : ""}>
       <div class="source-card-head">
@@ -645,6 +651,7 @@ function renderEvidenceGroup(group, { compact = false, withAnchor = false } = {}
       <div class="match-diagnostics">
         <span>핵심어 ${escapeText(coverageLabel)}</span>
         <span>문맥 ${escapeText(contextLabel)}</span>
+        <span>${escapeText(scopeLabel)}</span>
         <span>품질 ${escapeText(group.quality || "보통")}</span>
         <span>${escapeText(reasonLabel)}</span>
         ${stale ? "<span>오래된 후보</span>" : ""}
@@ -671,6 +678,15 @@ function renderEvidenceGroup(group, { compact = false, withAnchor = false } = {}
       </div>
     </article>
   `;
+}
+
+function scopeSummary(scopes) {
+  const values = new Set(scopes);
+  if (values.has("title+body")) return "제목+본문";
+  if (values.has("title") && values.has("body")) return "제목+본문";
+  if (values.has("title")) return "제목 매칭";
+  if (values.has("body")) return "본문 매칭";
+  return "문맥 매칭";
 }
 
 function renderInlineEvidence(hits = currentHits) {
@@ -805,6 +821,13 @@ function renderSearchMeta(meta) {
     .map((label) => `${label} ${Number(qualityDistribution[label] || 0)}`)
     .join(" · ");
   const scorecard = meta.scorecard || {};
+  const matchScopes = meta.match_scope_distribution || {};
+  const matchScopeLabel = [
+    `제목+본문 ${Number(matchScopes.title_body || 0)}`,
+    `본문 ${Number(matchScopes.body || 0)}`,
+    `제목 ${Number(matchScopes.title || 0)}`,
+    `문맥 ${Number(matchScopes.semantic || 0)}`,
+  ].join(" · ");
   const queryContext = meta.query_context || {};
   const contextCoverageLabel = `${Math.round(Number(meta.context_coverage || 0) * 100)}%`;
   const contextProfileItems = [
@@ -852,6 +875,7 @@ function renderSearchMeta(meta) {
     <div><strong>${escapeText(cacheLabel)}</strong><span>검색 캐시</span></div>
     <div class="search-meta-wide"><strong>${docTypes}</strong><span>문서 유형</span></div>
     <div class="search-meta-wide"><strong>${escapeText(qualitySummary)}</strong><span>품질 분포</span></div>
+    <div class="search-meta-wide"><strong>${escapeText(matchScopeLabel)}</strong><span>매칭 범위</span></div>
     <div><strong>${escapeText(`${Math.round(Number(queryContext.completeness || 0) * 100)}%`)}</strong><span>질문 문맥성</span></div>
     <div><strong>${escapeText(formatDate(meta.latest_updated))}</strong><span>최신 근거</span></div>
     <div class="search-context-profile">${contextProfileItems}</div>
