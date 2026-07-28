@@ -37,6 +37,8 @@ INGEST_STATE = {
     "error": None,
 }
 STATS_LOCK = threading.Lock()
+ASK_CACHE_LOCK = threading.Lock()
+ASK_CACHE: dict[str, dict[str, object]] = {}
 LAST_STATS = {
     "page_count": 0,
     "spaces": [],
@@ -46,6 +48,61 @@ LAST_STATS = {
     "ingest": INGEST_STATE.copy(),
     "stale": True,
 }
+
+
+def ask_cache_ttl_seconds() -> int:
+    try:
+        return max(0, int(os.getenv("ASK_CACHE_TTL_SECONDS", "600")))
+    except ValueError:
+        return 600
+
+
+def ask_cache_key(question: str, search_mode: str) -> str:
+    return json.dumps(
+        {"question": " ".join(question.lower().split()), "mode": search_mode},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def get_cached_ask(question: str, search_mode: str) -> dict[str, object] | None:
+    ttl = ask_cache_ttl_seconds()
+    if ttl <= 0:
+        return None
+    key = ask_cache_key(question, search_mode)
+    now = time.monotonic()
+    with ASK_CACHE_LOCK:
+        cached = ASK_CACHE.get(key)
+        if not cached:
+            return None
+        if now - float(cached.get("cached_at_monotonic", 0)) > ttl:
+            ASK_CACHE.pop(key, None)
+            return None
+        payload = dict(cached["payload"])
+    payload["search_meta"] = dict(payload.get("search_meta") or {})
+    payload["search_meta"]["cache_hit"] = True
+    payload["search_meta"]["cache_age_seconds"] = int(now - float(cached.get("cached_at_monotonic", now)))
+    return payload
+
+
+def put_cached_ask(question: str, search_mode: str, payload: dict[str, object]) -> None:
+    if ask_cache_ttl_seconds() <= 0:
+        return
+    key = ask_cache_key(question, search_mode)
+    cached_payload = dict(payload)
+    cached_payload.pop("id", None)
+    cached_payload["search_meta"] = dict(cached_payload.get("search_meta") or {})
+    cached_payload["search_meta"]["cache_hit"] = False
+    with ASK_CACHE_LOCK:
+        if len(ASK_CACHE) >= 80:
+            oldest_key = min(ASK_CACHE, key=lambda item: ASK_CACHE[item].get("cached_at_monotonic", 0))
+            ASK_CACHE.pop(oldest_key, None)
+        ASK_CACHE[key] = {"cached_at_monotonic": time.monotonic(), "payload": cached_payload}
+
+
+def clear_ask_cache() -> None:
+    with ASK_CACHE_LOCK:
+        ASK_CACHE.clear()
 
 
 def database_url_info() -> dict[str, object]:
@@ -115,11 +172,17 @@ def init_history_table() -> None:
                 hit_count INTEGER NOT NULL,
                 answer_mode TEXT NOT NULL DEFAULT '',
                 search_meta_json TEXT NOT NULL DEFAULT '{}',
+                feedback TEXT NOT NULL DEFAULT '',
+                feedback_note TEXT NOT NULL DEFAULT '',
+                feedback_at TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             )
             """
         )
         conn.execute("ALTER TABLE query_history ADD COLUMN IF NOT EXISTS search_meta_json TEXT NOT NULL DEFAULT '{}'")
+        conn.execute("ALTER TABLE query_history ADD COLUMN IF NOT EXISTS feedback TEXT NOT NULL DEFAULT ''")
+        conn.execute("ALTER TABLE query_history ADD COLUMN IF NOT EXISTS feedback_note TEXT NOT NULL DEFAULT ''")
+        conn.execute("ALTER TABLE query_history ADD COLUMN IF NOT EXISTS feedback_at TEXT NOT NULL DEFAULT ''")
     else:
         conn.execute(
             """
@@ -131,6 +194,9 @@ def init_history_table() -> None:
                 hit_count INTEGER NOT NULL,
                 answer_mode TEXT NOT NULL DEFAULT '',
                 search_meta_json TEXT NOT NULL DEFAULT '{}',
+                feedback TEXT NOT NULL DEFAULT '',
+                feedback_note TEXT NOT NULL DEFAULT '',
+                feedback_at TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             )
             """
@@ -140,6 +206,12 @@ def init_history_table() -> None:
             conn.execute("ALTER TABLE query_history ADD COLUMN answer_mode TEXT NOT NULL DEFAULT ''")
         if "search_meta_json" not in columns:
             conn.execute("ALTER TABLE query_history ADD COLUMN search_meta_json TEXT NOT NULL DEFAULT '{}'")
+        if "feedback" not in columns:
+            conn.execute("ALTER TABLE query_history ADD COLUMN feedback TEXT NOT NULL DEFAULT ''")
+        if "feedback_note" not in columns:
+            conn.execute("ALTER TABLE query_history ADD COLUMN feedback_note TEXT NOT NULL DEFAULT ''")
+        if "feedback_at" not in columns:
+            conn.execute("ALTER TABLE query_history ADD COLUMN feedback_at TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -148,24 +220,42 @@ def page_stats(conn: sqlite3.Connection) -> dict[str, object]:
     config = load_config()
     uses_postgres = getattr(conn, "is_postgres", False)
     page_count = conn.execute("SELECT COUNT(*) AS count FROM pages").fetchone()["count"]
+    chunk_count = conn.execute("SELECT COUNT(*) AS count FROM page_chunks").fetchone()["count"]
     space_rows = conn.execute(
         "SELECT space, COUNT(*) AS count FROM pages GROUP BY space ORDER BY count DESC"
     ).fetchall()
     latest = conn.execute("SELECT MAX(last_updated) AS latest FROM pages").fetchone()["latest"]
     history_count = conn.execute("SELECT COUNT(*) AS count FROM query_history").fetchone()["count"]
+    feedback_rows = conn.execute(
+        "SELECT feedback, COUNT(*) AS count FROM query_history WHERE feedback <> '' GROUP BY feedback"
+    ).fetchall()
     ingest_state = dict(INGEST_STATE)
     ingest_state["progress"] = ingest_progress_status(conn)
+    chunks_per_page = round(chunk_count / max(page_count, 1), 1) if page_count else 0
+    index_health = "empty" if page_count == 0 else "thin" if chunks_per_page < 1 else "ready"
     return {
         "page_count": page_count,
+        "chunk_count": chunk_count,
         "spaces": [{"space": row["space"], "count": row["count"]} for row in space_rows],
         "latest_updated": latest,
         "history_count": history_count,
+        "feedback": {row["feedback"]: row["count"] for row in feedback_rows},
         "answer_mode": "검색 보고서",
         "ingest": ingest_state,
         "weights": {
             "official_spaces": list(config.official_spaces),
             "space_weights": config.space_weights,
             "document_type_weights": config.document_type_weights,
+        },
+        "search_health": {
+            "chunks_per_page": chunks_per_page,
+            "official_spaces_configured": bool(config.official_spaces),
+            "ranking_weights_configured": bool(
+                config.official_spaces or config.space_weights or config.document_type_weights
+            ),
+            "index_health": index_health,
+            "ask_cache_entries": len(ASK_CACHE),
+            "ask_cache_ttl_seconds": ask_cache_ttl_seconds(),
         },
         "database": "postgres" if uses_postgres else "sqlite",
         "persistence": {
@@ -288,6 +378,7 @@ def run_ingest_job(limit: int | None) -> None:
                 self.limit = limit_value
 
         ingest(Args(limit))
+        clear_ask_cache()
         with INGEST_LOCK:
             INGEST_STATE.update(
                 {
@@ -309,31 +400,57 @@ def run_ingest_job(limit: int | None) -> None:
 
 
 def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
-    from confluence_qna import essential_terms
+    from confluence_qna import compact_text, essential_terms, hit_quality_label, phrase_candidates, recency_boost, term_is_covered
 
     keywords = essential_terms(question)[:10]
-    matched = set(hit.matched_terms)
-    covered = [term for term in keywords if term in matched]
+    covered = [term for term in keywords if term_is_covered(term, hit.matched_terms)]
     coverage = round(len(covered) / max(len(keywords), 1), 2) if keywords else 0
+    title = compact_text(hit.title)
+    phrase_hits = [phrase for phrase in phrase_candidates(question)[:4] if phrase in title]
+    freshness_score = recency_boost(hit.last_updated)
     reasons = []
     if coverage >= 0.75:
         reasons.append("핵심어 대부분 매칭")
     elif coverage >= 0.4:
         reasons.append("핵심어 일부 매칭")
+    if phrase_hits:
+        reasons.append("질문 문구 제목 매칭")
     if hit.document_type in {"정책", "매뉴얼", "결정사항"}:
         reasons.append("공식 근거 유형")
     if any(term in hit.title for term in covered):
         reasons.append("제목 매칭")
     if not reasons:
         reasons.append("문맥 유사 후보")
+    ranking_signals = []
+    if coverage:
+        ranking_signals.append({"label": "핵심어", "value": f"{round(coverage * 100)}%"})
+    if hit.document_type in {"정책", "매뉴얼", "결정사항"}:
+        ranking_signals.append({"label": "공식성", "value": hit.document_type})
+    if phrase_hits:
+        ranking_signals.append({"label": "문구", "value": "제목 일치"})
+    if any(term in hit.title for term in covered):
+        ranking_signals.append({"label": "제목", "value": "매칭"})
+    if freshness_score > 0:
+        ranking_signals.append({"label": "최신성", "value": "양호"})
+    elif freshness_score < 0:
+        ranking_signals.append({"label": "최신성", "value": "오래됨"})
+    if hit.score >= 28:
+        ranking_signals.append({"label": "점수", "value": "강함"})
     return {
         "keyword_coverage": coverage,
         "covered_keywords": covered,
+        "title_phrase_matches": phrase_hits,
+        "freshness_score": round(freshness_score, 2),
         "match_reason": " · ".join(reasons[:3]),
+        "quality": hit_quality_label(hit, question),
+        "ranking_signals": ranking_signals[:5],
     }
 
 
 def serialize_hits(hits, question: str = "") -> list[dict[str, object]]:
+    from confluence_qna import essential_terms
+
+    excerpt_terms = list(dict.fromkeys([*essential_terms(question), *(term for hit in hits for term in hit.matched_terms)]))
     return [
         {
             "page_id": hit.page_id,
@@ -347,7 +464,7 @@ def serialize_hits(hits, question: str = "") -> list[dict[str, object]]:
             "document_type": hit.document_type,
             "matched_terms": list(hit.matched_terms),
             "chunk_index": hit.chunk_index,
-            "excerpt": focused_excerpt(hit.text, list(hit.matched_terms)),
+            "excerpt": focused_excerpt(hit.text, excerpt_terms),
             **hit_match_diagnostics(hit, question),
         }
         for hit in hits
@@ -417,7 +534,8 @@ def history_detail(history_id: int):
     try:
         row = conn.execute(
             """
-            SELECT id, question, answer, hits_json, hit_count, answer_mode, search_meta_json, created_at
+            SELECT id, question, answer, hits_json, hit_count, answer_mode, search_meta_json,
+                   feedback, feedback_note, feedback_at, created_at
             FROM query_history
             WHERE id = ?
             """,
@@ -434,6 +552,9 @@ def history_detail(history_id: int):
                 "hit_count": row["hit_count"],
                 "answer_mode": row["answer_mode"],
                 "search_meta": json.loads(row["search_meta_json"] or "{}"),
+                "feedback": row["feedback"],
+                "feedback_note": row["feedback_note"],
+                "feedback_at": row["feedback_at"],
                 "created_at": row["created_at"],
             }
         )
@@ -451,11 +572,30 @@ def ask_api():
         return jsonify({"error": "question is required"}), 400
 
     conn = connect_db()
+    started = time.monotonic()
     try:
-        hits = merged_hits(conn, question, search_mode)
-        answer, answer_mode = generate_answer(question, hits)
-        serialized = serialize_hits(hits, question)
-        meta = search_meta(question, hits, search_mode)
+        cached_payload = get_cached_ask(question, search_mode)
+        if cached_payload:
+            answer = str(cached_payload["answer"])
+            answer_mode = str(cached_payload["answer_mode"])
+            serialized = list(cached_payload["hits"])
+            meta = dict(cached_payload["search_meta"])
+            meta["elapsed_ms"] = int((time.monotonic() - started) * 1000)
+            meta["slow_query"] = False
+        else:
+            hits = merged_hits(conn, question, search_mode)
+            answer, answer_mode = generate_answer(question, hits)
+            serialized = serialize_hits(hits, question)
+            meta = search_meta(question, hits, search_mode)
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            meta["elapsed_ms"] = elapsed_ms
+            meta["slow_query"] = elapsed_ms >= int(os.getenv("SLOW_SEARCH_MS", "6500"))
+            meta["cache_hit"] = False
+            if meta["slow_query"]:
+                meta.setdefault("quality_notes", []).insert(
+                    0,
+                    "검색 시간이 길었습니다. 정밀 모드나 더 구체적인 질문으로 후보 범위를 줄이면 안정적입니다.",
+                )
         created_at = datetime.now(timezone.utc).isoformat()
         if getattr(conn, "is_postgres", False):
             cursor = conn.execute(
@@ -468,7 +608,7 @@ def ask_api():
                     question,
                     answer,
                     json.dumps(serialized, ensure_ascii=False),
-                    len(hits),
+                    len(serialized),
                     answer_mode,
                     json.dumps(meta, ensure_ascii=False),
                     created_at,
@@ -485,7 +625,7 @@ def ask_api():
                     question,
                     answer,
                     json.dumps(serialized, ensure_ascii=False),
-                    len(hits),
+                    len(serialized),
                     answer_mode,
                     json.dumps(meta, ensure_ascii=False),
                     created_at,
@@ -493,21 +633,58 @@ def ask_api():
             )
             history_id = cursor.lastrowid
         conn.commit()
-        return jsonify(
-            {
+        response_payload = {
                 "id": history_id,
                 "question": question,
                 "answer": answer,
                 "hits": serialized,
-                "hit_count": len(hits),
+                "hit_count": len(serialized),
                 "answer_mode": answer_mode,
                 "search_meta": meta,
                 "created_at": created_at,
             }
-        )
+        if not cached_payload:
+            put_cached_ask(question, search_mode, response_payload)
+        return jsonify(response_payload)
     except Exception as error:
         logger.exception("Ask API failed")
         return jsonify(error_payload(error)), 500
+    finally:
+        conn.close()
+
+
+@app.post("/api/history/<int:history_id>/feedback")
+def history_feedback(history_id: int):
+    init_history_table()
+    payload = request.get_json(silent=True) or {}
+    feedback = str(payload.get("feedback", "")).strip()
+    note = str(payload.get("note", "")).strip()[:500]
+    if feedback not in {"useful", "partial", "bad"}:
+        return jsonify({"error": "feedback must be useful, partial, or bad"}), 400
+    conn = connect_db()
+    try:
+        row = conn.execute("SELECT id FROM query_history WHERE id = ?", (history_id,)).fetchone()
+        if row is None:
+            return jsonify({"error": "history not found"}), 404
+        feedback_at = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """
+            UPDATE query_history
+            SET feedback = ?, feedback_note = ?, feedback_at = ?
+            WHERE id = ?
+            """,
+            (feedback, note, feedback_at, history_id),
+        )
+        conn.commit()
+        clear_ask_cache()
+        return jsonify(
+            {
+                "id": history_id,
+                "feedback": feedback,
+                "feedback_note": note,
+                "feedback_at": feedback_at,
+            }
+        )
     finally:
         conn.close()
 
@@ -560,6 +737,8 @@ def ingest_batch_api():
     batch_size = max(1, min(batch_size, 100))
     try:
         result = ingest_batch(batch_size=batch_size, reset=reset)
+        if result.get("processed") or result.get("status") == "completed":
+            clear_ask_cache()
     except Exception as error:
         logger.exception("Batch ingest failed")
         return jsonify(error_payload(error)), 502
@@ -609,13 +788,25 @@ def admin_diagnostics():
         conn = connect_db()
         db_info = database_url_info()
         progress = ingest_progress_status(conn)
+        page_count = db_count(conn, "pages")
+        chunk_count = db_count(conn, "page_chunks")
+        chunks_per_page = round(chunk_count / max(page_count, 1), 1) if page_count else 0
+        index_health = "empty" if page_count == 0 else "thin" if chunks_per_page < 1 else "ready"
         payload = {
             "status": "ok",
             "database": "postgres" if getattr(conn, "is_postgres", False) else "sqlite",
             "counts": {
-                "pages": db_count(conn, "pages"),
-                "chunks": db_count(conn, "page_chunks"),
+                "pages": page_count,
+                "chunks": chunk_count,
                 "history": db_count(conn, "query_history"),
+            },
+            "search_health": {
+                "chunks_per_page": chunks_per_page,
+                "index_health": index_health,
+                "official_spaces_configured": bool(config.official_spaces),
+                "ranking_weights_configured": bool(
+                    config.official_spaces or config.space_weights or config.document_type_weights
+                ),
             },
             "config": {
                 "base_url_set": bool(config.base_url),
@@ -778,6 +969,7 @@ def import_pages_json():
             upsert_stored_page(conn, item)
             imported += 1
         conn.commit()
+        clear_ask_cache()
         return jsonify({"status": "ok", "imported": imported, "page_count": db_count(conn, "pages")})
     except Exception as error:
         logger.exception("Page backup import failed")

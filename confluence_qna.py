@@ -8,7 +8,8 @@ import os
 import re
 import sqlite3
 import sys
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
@@ -786,8 +787,12 @@ def recency_boost(last_updated: str) -> float:
 
 
 def fts_query(text: str) -> str:
-    terms = extract_terms(text)
-    return " OR ".join(terms[:12]) or text
+    terms = []
+    for term in extract_terms(text):
+        if re.search(r"[\"'*()]", term):
+            continue
+        terms.append(term)
+    return " OR ".join(ordered_unique(terms)[:18]) or text
 
 
 INTENT_KEYWORDS = {
@@ -798,6 +803,32 @@ INTENT_KEYWORDS = {
     "정책": ("정책", "가이드", "가이드라인", "기준", "프로세스"),
     "리스크": ("리스크", "위험", "문제", "이슈", "상충", "예외"),
     "정상": ("정상", "검증", "점검", "확인", "이슈", "리스크"),
+}
+
+SYNONYM_GROUPS = (
+    ("정책", "규정", "기준", "룰", "rule", "policy"),
+    ("가이드", "가이드라인", "매뉴얼", "manual", "sop", "운영방법", "처리방법"),
+    ("상태", "상태값", "status", "스테이터스"),
+    ("주문", "발주", "오더", "order"),
+    ("결정", "결정사항", "확정", "승인", "최종", "decision"),
+    ("리스크", "위험", "문제", "이슈", "예외", "상충"),
+    ("회의", "회의록", "미팅", "논의", "sync", "싱크"),
+    ("정상", "검증", "점검", "확인", "유효", "valid"),
+    ("변경", "수정", "업데이트", "최신", "최근", "이력"),
+)
+
+SYNONYM_LOOKUP = {
+    alias.lower(): tuple(term.lower() for term in group)
+    for group in SYNONYM_GROUPS
+    for alias in group
+}
+
+QUERY_REWRITE_HINTS = {
+    "정상": ("최신 정책 기준 예외 리스크", "운영 기준 검증 체크리스트"),
+    "최종": ("최종 확정 결정사항 승인", "정책 기준 변경 이력"),
+    "리스크": ("예외 상충 이슈 위험", "장애 문제 회고"),
+    "상태": ("상태값 status 정의 기준", "상태 전이 프로세스"),
+    "발주": ("발주 주문 오더 처리 기준", "발주 프로세스 예외"),
 }
 
 DOCUMENT_TYPE_KEYWORDS = {
@@ -959,9 +990,44 @@ def question_tokens(text: str) -> list[str]:
     )
 
 
+def synonyms_for(term: str) -> list[str]:
+    normalized = normalize_token(term)
+    if not normalized:
+        return []
+    direct = list(SYNONYM_LOOKUP.get(normalized, ()))
+    contained = [
+        synonym
+        for key, synonyms in SYNONYM_LOOKUP.items()
+        if key in normalized or normalized in key
+        for synonym in synonyms
+    ]
+    return ordered_unique([*direct, *contained])
+
+
+def expand_terms_with_synonyms(terms: Iterable[str]) -> list[str]:
+    expanded: list[str] = []
+    for term in terms:
+        expanded.append(term)
+        expanded.extend(synonyms_for(term))
+    return ordered_unique(expanded)
+
+
+def term_is_covered(term: str, matched_terms: Iterable[str]) -> bool:
+    matched = set(ordered_unique(matched_terms))
+    equivalents = set(expand_terms_with_synonyms([term]))
+    return bool(matched & equivalents)
+
+
+def coverage_ratio_for_terms(terms: list[str], matched_terms: Iterable[str]) -> float:
+    if not terms:
+        return 0.0
+    covered = [term for term in terms if term_is_covered(term, matched_terms)]
+    return len(covered) / max(len(terms), 1)
+
+
 @lru_cache(maxsize=4096)
 def semantic_tokens(text: str) -> tuple[str, ...]:
-    base_tokens = question_tokens(text)
+    base_tokens = expand_terms_with_synonyms(question_tokens(text))
     grams: list[str] = []
     for token in base_tokens:
         if re.search(r"[가-힣]", token) and len(token) >= 4:
@@ -1052,6 +1118,7 @@ def context_score(
     score += title_overlap * 24.0
     score += sentence_overlap * 28.0
     score += min(phrase_hits, 6) * 4.0
+    score += exactness_bonus(row, query, essentials)
     score += proximity_bonus(title, essentials) * 1.8
     score += proximity_bonus(text, essentials) * 1.2
     matched_essentials = [term for term in essentials if term in title or term in text]
@@ -1124,9 +1191,11 @@ def extract_terms(question: str) -> list[str]:
     expanded = []
     for token in tokens:
         expanded.append(token)
+        expanded.extend(synonyms_for(token))
         for domain_term in DOMAIN_TERMS:
             if domain_term in token:
                 expanded.append(domain_term)
+                expanded.extend(synonyms_for(domain_term))
         if re.search(r"[가-힣]", token) and len(token) >= 5:
             expanded.extend(char_ngrams(token))
     compact_question = nospace_text(question)
@@ -1135,6 +1204,7 @@ def extract_terms(question: str) -> list[str]:
     for trigger, synonyms in INTENT_KEYWORDS.items():
         if trigger in question:
             expanded.extend(synonyms)
+            expanded.extend(expand_terms_with_synonyms(synonyms))
     return ordered_unique(expanded)
 
 
@@ -1205,6 +1275,13 @@ def phrase_candidates(question: str) -> list[str]:
     return ordered_unique(phrases)
 
 
+def core_query_text(question: str) -> str:
+    terms = [term for term in essential_terms(question) if term not in INTENT_ONLY_TERMS]
+    if len(terms) >= 2:
+        return " ".join(terms[:8])
+    return " ".join(question_tokens(question)[:8])
+
+
 def proximity_bonus(text: str, essentials: list[str]) -> float:
     positions = [text.find(term) for term in essentials[:8] if term and text.find(term) >= 0]
     if len(positions) < 2:
@@ -1217,6 +1294,40 @@ def proximity_bonus(text: str, essentials: list[str]) -> float:
     if spread <= 520:
         return 2.0
     return 0.0
+
+
+def exactness_bonus(row: sqlite3.Row, query: str, essentials: list[str]) -> float:
+    title = compact_text(row["title"])
+    text = compact_text(row["text"])
+    query_phrase = compact_text(query)
+    query_no_space = nospace_text(query)
+    title_no_space = nospace_text(row["title"])
+    text_no_space = nospace_text(row["text"])
+    score = 0.0
+    if len(query_phrase) >= 6:
+        if query_phrase in title:
+            score += 16.0
+        elif query_phrase in text:
+            score += 7.0
+    if len(query_no_space) >= 6:
+        if query_no_space in title_no_space:
+            score += 13.0
+        elif query_no_space in text_no_space:
+            score += 5.0
+    title_essential_hits = sum(1 for term in essentials[:8] if term in title or nospace_text(term) in title_no_space)
+    if title_essential_hits:
+        score += min(title_essential_hits, 5) * 3.0
+    return score
+
+
+def hit_quality_score(hit: SearchHit, question: str) -> float:
+    keywords = essential_terms(question)[:10] or extract_terms(question)[:10]
+    coverage = coverage_ratio_for_terms(keywords, hit.matched_terms)
+    official = 1.0 if hit.document_type in {"정책", "매뉴얼", "결정사항"} else 0.0
+    title_match = 1.0 if any(term in compact_text(hit.title) for term in keywords[:6]) else 0.0
+    exact_phrase = 1.0 if any(phrase in compact_text(hit.title) for phrase in phrase_candidates(question)[:4]) else 0.0
+    fresh = max(min(recency_boost(hit.last_updated), 2.0), -0.8)
+    return hit.score + coverage * 18.0 + official * 6.0 + title_match * 5.0 + exact_phrase * 5.0 + fresh
 
 
 def bm25_lite_score(title: str, text: str, terms: list[str], essentials: list[str]) -> tuple[float, list[str]]:
@@ -1276,6 +1387,7 @@ def term_score(
             score += 12.0
         elif phrase in text:
             score += 4.0
+    score += exactness_bonus(row, query, essentials)
     score += proximity_bonus(title, essentials) * 1.6
     score += proximity_bonus(text, essentials)
     if terms:
@@ -1303,7 +1415,7 @@ def term_score(
     return score, matched
 
 
-def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchHit]:
+def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float | None = None) -> list[SearchHit]:
     config = load_config()
     terms = extract_terms(query)
     essentials = essential_terms(query)
@@ -1315,10 +1427,11 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
     rows_by_id: dict[tuple[str, int], sqlite3.Row] = {}
     like_clauses = []
     params = []
-    candidate_limit = 8 if uses_postgres else 18
+    candidate_limit = 8 if uses_postgres else 12
+    max_candidate_floor = parse_int_env("SEARCH_MAX_CANDIDATES", 96 if uses_postgres else 120)
     candidate_terms = [
         term
-        for term in ordered_unique([*essentials, *terms, *question_tokens(query)])
+        for term in ordered_unique([*essentials, *terms, *question_tokens(query), *expand_terms_with_synonyms(essentials)])
         if len(term) >= 2
     ][:candidate_limit]
     phrase_terms = [
@@ -1327,7 +1440,34 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
         if len(nospace_text(phrase)) >= 4
     ][:2 if uses_postgres else 5]
     candidate_terms = ordered_unique([*candidate_terms, *phrase_terms])[: candidate_limit + len(phrase_terms)]
-    max_candidates = max(limit * (8 if uses_postgres else 16), 32 if uses_postgres else 48)
+    max_candidates = min(
+        max(limit * (10 if uses_postgres else 16), 56 if uses_postgres else 72),
+        max(max_candidate_floor, limit * 4),
+    )
+
+    if not uses_postgres:
+        try:
+            fts_rows = conn.execute(
+                """
+                SELECT c.page_id, c.chunk_index, c.title, c.text, c.created_at, c.last_updated, c.author, c.space, c.url
+                FROM page_chunks_fts
+                JOIN page_chunks c ON c.rowid = page_chunks_fts.rowid
+                WHERE page_chunks_fts MATCH ?
+                ORDER BY bm25(page_chunks_fts)
+                LIMIT ?
+                """,
+                (fts_query(query), max(limit * 8, 42)),
+            ).fetchall()
+            rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in fts_rows})
+        except sqlite3.OperationalError:
+            pass
+
+    if deadline and time.monotonic() >= deadline:
+        return []
+
+    if not uses_postgres and len(rows_by_id) >= max(limit * 6, 36):
+        candidate_terms = candidate_terms[: max(4, min(8, len(essentials) + 3))]
+
     for term in candidate_terms:
         like_clauses.append("(LOWER(title) LIKE ? OR LOWER(text) LIKE ?)")
         like = f"%{term}%"
@@ -1347,27 +1487,13 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
         ).fetchall()
         rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in like_rows})
 
-    if not uses_postgres:
-        try:
-            fts_rows = conn.execute(
-                """
-                SELECT c.page_id, c.chunk_index, c.title, c.text, c.created_at, c.last_updated, c.author, c.space, c.url
-                FROM page_chunks_fts
-                JOIN page_chunks c ON c.rowid = page_chunks_fts.rowid
-                WHERE page_chunks_fts MATCH ?
-                LIMIT ?
-                """,
-                (fts_query(query), max(limit * 8, 40)),
-            ).fetchall()
-            rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in fts_rows})
-        except sqlite3.OperationalError:
-            pass
-
     hits = []
     for row in rows_by_id.values():
+        if deadline and time.monotonic() >= deadline:
+            break
         keyword_score, keyword_matched = term_score(row, query, terms, essentials, preferred_doc_types, config)
         semantic_score, semantic_matched = context_score(row, query, terms, essentials, preferred_doc_types, config)
-        score = semantic_score + max(keyword_score, -30.0) * 0.35
+        score = semantic_score + max(keyword_score, -30.0) * 0.42
         matched = ordered_unique([*semantic_matched, *keyword_matched])
         if matched and score > -20:
             hits.append(row_to_hit(row, score, matched))
@@ -1377,11 +1503,24 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8) -> list[SearchH
 def derive_queries(question: str, mode: str = "balanced") -> list[str]:
     base = question.strip()
     essentials = " ".join(essential_terms(question))
+    core = core_query_text(question)
+    phrases = phrase_candidates(question)[:4]
+    rewrite_hints = [
+        f"{essentials} {hint}"
+        for term in essential_terms(question)[:6]
+        for key, hints in QUERY_REWRITE_HINTS.items()
+        if key in term or term in key
+        for hint in hints
+    ]
+    synonym_query = " ".join(expand_terms_with_synonyms(essential_terms(question)[:6])[:10])
     prefixes = [
+        core,
+        *phrases,
         f"{essentials} 최신 정책 최종 정의",
         f"{essentials} 상태값 기준",
         f"{essentials} 의사결정 회의록 배경",
         f"{essentials} 리스크 상충 예외",
+        synonym_query,
     ]
     if mode == "strict":
         prefixes = [
@@ -1398,7 +1537,7 @@ def derive_queries(question: str, mode: str = "balanced") -> list[str]:
         )
     elif mode == "recent":
         prefixes.insert(0, f"{essentials} 최신 변경 최근 업데이트")
-    return ordered_unique([base, *prefixes])
+    return ordered_unique([base, *rewrite_hints, *prefixes])
 
 
 def diversify_hits(hits: list[SearchHit], limit: int = 18, per_page_limit: int = 2) -> list[SearchHit]:
@@ -1427,27 +1566,118 @@ def mode_rank_key(hit: SearchHit, mode: str) -> tuple[float, str]:
     if mode == "recent":
         return (recency_boost(hit.last_updated) * 6 + hit.score, hit.last_updated)
     if mode == "strict":
-        return (hit.score + len(hit.matched_terms) * 1.5, hit.last_updated)
+        official_bonus = 6.0 if hit.document_type in {"정책", "매뉴얼", "결정사항"} else -2.0
+        return (hit.score + len(hit.matched_terms) * 1.5 + official_bonus, hit.last_updated)
     if mode == "broad":
         return (hit.score - max(hit.score - 30, 0) * 0.25, hit.last_updated)
     return (hit.score, hit.last_updated)
 
 
+def final_rank_key(hit: SearchHit, question: str, mode: str) -> tuple[float, str]:
+    base_score = mode_rank_key(hit, mode)[0]
+    quality = hit_quality_score(hit, question)
+    keywords = essential_terms(question)[:10] or extract_terms(question)[:10]
+    coverage = coverage_ratio_for_terms(keywords, hit.matched_terms)
+    phrase_bonus = 0.0
+    title = compact_text(hit.title)
+    text = compact_text(hit.text)
+    for phrase in phrase_candidates(question)[:4]:
+        if phrase in title:
+            phrase_bonus += 5.0
+        elif phrase in text:
+            phrase_bonus += 1.5
+    coverage_penalty = 8.0 if keywords and coverage < 0.25 else 0.0
+    return (base_score * 0.66 + quality * 0.34 + min(phrase_bonus, 10.0) - coverage_penalty, hit.last_updated)
+
+
+def feedback_adjustment_map(conn: sqlite3.Connection) -> dict[str, float]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT feedback, hits_json
+            FROM query_history
+            WHERE feedback IN ('useful', 'partial', 'bad')
+            ORDER BY id DESC
+            LIMIT 200
+            """
+        ).fetchall()
+    except Exception:
+        return {}
+    weights = {"useful": 0.45, "partial": 0.12, "bad": -0.9}
+    adjustments: dict[str, float] = {}
+    for row in rows:
+        try:
+            hits = json.loads(row["hits_json"] or "[]")
+        except Exception:
+            continue
+        page_ids = ordered_unique(str(hit.get("page_id") or "") for hit in hits[:6] if isinstance(hit, dict))
+        feedback = str(row["feedback"] or "")
+        weight = weights.get(feedback, 0.0)
+        for page_id in page_ids:
+            adjustments[page_id] = adjustments.get(page_id, 0.0) + weight
+    return {
+        page_id: max(min(score, 4.0), -6.0)
+        for page_id, score in adjustments.items()
+        if abs(score) >= 0.1
+    }
+
+
+def apply_feedback_adjustments(conn: sqlite3.Connection, hits: Iterable[SearchHit]) -> list[SearchHit]:
+    adjustments = feedback_adjustment_map(conn)
+    if not adjustments:
+        return list(hits)
+    adjusted = []
+    for hit in hits:
+        delta = adjustments.get(hit.page_id, 0.0)
+        adjusted.append(replace(hit, score=hit.score + delta) if delta else hit)
+    return adjusted
+
+
+def apply_page_support_boosts(hits: Iterable[SearchHit]) -> list[SearchHit]:
+    hit_list = list(hits)
+    if not hit_list:
+        return []
+    by_page: dict[str, list[SearchHit]] = {}
+    for hit in hit_list:
+        by_page.setdefault(hit.page_id, []).append(hit)
+    boosted = []
+    for hit in hit_list:
+        siblings = by_page.get(hit.page_id, [])
+        page_terms = ordered_unique(term for sibling in siblings for term in sibling.matched_terms)
+        chunk_support = min(max(len(siblings) - 1, 0), 4) * 1.8
+        term_support = min(len(page_terms), 10) * 0.45
+        official_support = 1.2 if hit.document_type in {"정책", "매뉴얼", "결정사항"} and len(siblings) >= 2 else 0.0
+        boost = min(chunk_support + term_support + official_support, 9.0)
+        boosted.append(replace(hit, score=hit.score + boost) if boost else hit)
+    return boosted
+
+
 def merged_hits(conn: sqlite3.Connection, question: str, mode: str = "balanced") -> list[SearchHit]:
     mode = mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced"
     by_id: dict[tuple[str, int], SearchHit] = {}
-    per_query_limit = 10 if mode == "broad" else 7 if mode == "recent" else 6
+    votes: dict[tuple[str, int], int] = {}
+    deadline = time.monotonic() + float(os.getenv("SEARCH_TIME_BUDGET_SECONDS", "8"))
+    per_query_limit = 8 if mode == "broad" else 6 if mode == "recent" else 5
     queries = derive_queries(question, mode)
+    queries = queries[:5 if mode == "broad" else 4]
     if getattr(conn, "is_postgres", False):
         queries = queries[:3] if mode == "broad" else queries[:2]
         per_query_limit = min(per_query_limit, 6)
     for query in queries:
-        for hit in search(conn, query, limit=per_query_limit):
+        if time.monotonic() >= deadline:
+            break
+        for hit in search(conn, query, limit=per_query_limit, deadline=deadline):
             key = (hit.page_id, hit.chunk_index)
+            votes[key] = votes.get(key, 0) + 1
             existing = by_id.get(key)
             if existing is None or hit.score > existing.score:
                 by_id[key] = hit
-    ranked = sorted(by_id.values(), key=lambda hit: mode_rank_key(hit, mode), reverse=True)
+    consensus_hits = [
+        replace(hit, score=hit.score + min(max(votes.get(key, 1) - 1, 0), 4) * 2.8)
+        for key, hit in by_id.items()
+    ]
+    adjusted_hits = apply_feedback_adjustments(conn, apply_page_support_boosts(consensus_hits))
+    ranked = sorted(adjusted_hits, key=lambda hit: final_rank_key(hit, question, mode), reverse=True)
     return diversify_hits(ranked, per_page_limit=3 if mode == "strict" else 2)
 
 
@@ -1457,12 +1687,18 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
     official_count = sum(1 for hit in page_hits if hit.document_type in {"정책", "매뉴얼", "결정사항"})
     stale_count = sum(1 for hit in page_hits if recency_boost(hit.last_updated) < 0)
     matched_keywords = {
-        term
+        keyword
         for hit in hits
-        for term in hit.matched_terms
-        if term in keywords
+        for keyword in keywords
+        if term_is_covered(keyword, hit.matched_terms)
     }
     coverage_ratio = round(len(matched_keywords) / max(len(keywords), 1), 2) if keywords else 0
+    missing_keywords = [keyword for keyword in keywords if keyword not in matched_keywords]
+    quality_distribution = hit_quality_distribution(hits, question)
+    scorecard = search_scorecard(page_hits, hits, coverage_ratio, official_count, stale_count)
+    issue_code = search_quality_issue_code(page_hits, coverage_ratio, official_count, stale_count, scorecard)
+    derived_queries = derive_queries(question, mode)
+    score_margin = round(page_hits[0].score - page_hits[1].score, 2) if len(page_hits) >= 2 else None
     return {
         "mode": mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced",
         "confidence": confidence_label(page_hits),
@@ -1471,19 +1707,35 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
         "page_count": len(page_hits),
         "chunk_count": len(hits),
         "top_score": round(page_hits[0].score, 2) if page_hits else 0,
+        "score_margin": score_margin,
         "official_count": official_count,
         "stale_count": stale_count,
         "coverage_ratio": coverage_ratio,
+        "missing_keywords": missing_keywords[:6],
+        "quality_distribution": quality_distribution,
+        "scorecard": scorecard,
+        "derived_query_count": len(derived_queries),
+        "derived_queries": derived_queries[:6],
+        "quality_issue_code": issue_code,
+        "remediation_steps": search_remediation_steps(issue_code),
+        "recommended_mode": recommended_mode(coverage_ratio, official_count, stale_count, len(page_hits)),
         "latest_updated": max((hit.last_updated for hit in page_hits), default=""),
         "ranker": "hybrid-bm25-context",
         "ranker_features": [
             "BM25-lite 길이 보정",
             "문맥 overlap",
+            "동의어/영문 약어 확장",
+            "질문 문구 exactness",
             "띄어쓰기 무시 phrase",
             "2-4글자 n-gram",
             "문서 유형/스페이스 가중치",
+            "사용자 피드백 보정",
+            "반복 후보 consensus 가점",
+            "문서 단위 다중 근거 가점",
+            "정밀 모드 공식 근거 우선",
         ],
-        "quality_notes": search_quality_notes(page_hits, official_count, stale_count, coverage_ratio),
+        "query_suggestions": query_suggestions(question, hits, coverage_ratio, official_count, stale_count),
+        "quality_notes": search_quality_notes(page_hits, official_count, stale_count, coverage_ratio, scorecard),
         "doc_type_counts": {
             doc_type: sum(1 for hit in page_hits if hit.document_type == doc_type)
             for doc_type in sorted({hit.document_type for hit in page_hits})
@@ -1491,11 +1743,177 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
     }
 
 
+def search_quality_issue_code(
+    page_hits: list[SearchHit],
+    coverage_ratio: float,
+    official_count: int,
+    stale_count: int,
+    scorecard: dict[str, object],
+) -> str:
+    if not page_hits:
+        return "no_results"
+    if coverage_ratio < 0.35:
+        return "low_coverage"
+    if official_count == 0:
+        return "no_official_sources"
+    if stale_count >= max(2, len(page_hits) // 2):
+        return "stale_sources"
+    if len(page_hits) >= 2 and page_hits[0].score - page_hits[1].score < 3 and float(scorecard.get("overall", 0)) < 0.72:
+        return "ambiguous_top_results"
+    if float(scorecard.get("diversity", 0)) < 0.35 and len(page_hits) >= 2:
+        return "low_diversity"
+    if float(scorecard.get("strength", 0)) < 0.35:
+        return "weak_top_score"
+    return "healthy"
+
+
+def search_remediation_steps(issue_code: str) -> list[str]:
+    return {
+        "no_results": [
+            "넓게 모드로 재검색",
+            "수집 스페이스와 문서 수 확인",
+            "업무명/시스템명/영문 약어를 함께 입력",
+        ],
+        "low_coverage": [
+            "누락 핵심어를 포함해 재질문",
+            "정책/기준/예외 같은 판단 기준어 추가",
+            "넓게 모드로 관련 표현 탐색",
+        ],
+        "no_official_sources": [
+            "정밀 모드로 정책/매뉴얼 후보 우선 확인",
+            "CONFLUENCE_OFFICIAL_SPACES 설정 확인",
+            "공식 스페이스 가중치 부여",
+        ],
+        "stale_sources": [
+            "최신 모드로 재검색",
+            "최근 변경/최종/확정 키워드 추가",
+            "문서 수집 배치 재실행",
+        ],
+        "low_diversity": [
+            "넓게 모드로 문서 다양성 확인",
+            "근거 문서 목록에서 문서유형 필터 해제",
+            "질문 범위를 한 단계 넓혀 재검색",
+        ],
+        "ambiguous_top_results": [
+            "상위 후보 2-3개 본문을 직접 비교",
+            "질문에 대상 시스템명/상태값/시행일 추가",
+            "정밀 모드로 공식 근거 우선 재검색",
+        ],
+        "weak_top_score": [
+            "질문에 대상 업무와 기준을 구체화",
+            "동의어/영문 약어를 함께 입력",
+            "정밀 모드로 제목 매칭 후보 확인",
+        ],
+        "healthy": [
+            "상위 공식 근거 본문 확인",
+            "최신성 비교 후 최종 판단",
+        ],
+    }.get(issue_code, ["검색 품질 패널의 누락 핵심어와 추천 검색어를 확인"])
+
+
+def search_scorecard(
+    page_hits: list[SearchHit],
+    hits: list[SearchHit],
+    coverage_ratio: float,
+    official_count: int,
+    stale_count: int,
+) -> dict[str, object]:
+    page_count = len(page_hits)
+    official_ratio = official_count / max(page_count, 1) if page_count else 0.0
+    freshness_ratio = 1.0 - min(stale_count / max(page_count, 1), 1.0) if page_count else 0.0
+    diversity_ratio = page_count / max(len(hits), 1) if hits else 0.0
+    top_score = page_hits[0].score if page_hits else 0.0
+    strength_ratio = min(max(top_score / 40.0, 0.0), 1.0)
+    overall = (
+        coverage_ratio * 0.34
+        + official_ratio * 0.22
+        + freshness_ratio * 0.18
+        + diversity_ratio * 0.12
+        + strength_ratio * 0.14
+    )
+    if not page_hits:
+        label = "낮음"
+    elif overall >= 0.72:
+        label = "높음"
+    elif overall >= 0.45:
+        label = "중간"
+    else:
+        label = "낮음"
+    return {
+        "overall": round(overall, 2),
+        "label": label,
+        "coverage": round(coverage_ratio, 2),
+        "official": round(official_ratio, 2),
+        "freshness": round(freshness_ratio, 2),
+        "diversity": round(diversity_ratio, 2),
+        "strength": round(strength_ratio, 2),
+    }
+
+
+def recommended_mode(
+    coverage_ratio: float,
+    official_count: int,
+    stale_count: int,
+    page_count: int,
+) -> str:
+    if page_count == 0 or coverage_ratio < 0.35:
+        return "broad"
+    if official_count == 0 or coverage_ratio < 0.65:
+        return "strict"
+    if stale_count >= max(2, page_count // 2):
+        return "recent"
+    return "balanced"
+
+
+def hit_quality_label(hit: SearchHit, question: str) -> str:
+    keywords = essential_terms(question)[:10]
+    coverage = len([term for term in keywords if term_is_covered(term, hit.matched_terms)]) / max(len(keywords), 1) if keywords else 0
+    if coverage >= 0.75 and hit.score >= 28:
+        return "강함"
+    if coverage >= 0.4 or hit.score >= 16:
+        return "보통"
+    return "약함"
+
+
+def hit_quality_distribution(hits: list[SearchHit], question: str) -> dict[str, int]:
+    counts = {"강함": 0, "보통": 0, "약함": 0}
+    for hit in hits:
+        counts[hit_quality_label(hit, question)] += 1
+    return counts
+
+
+def query_suggestions(
+    question: str,
+    hits: list[SearchHit],
+    coverage_ratio: float,
+    official_count: int,
+    stale_count: int,
+) -> list[str]:
+    base_terms = essential_terms(question)[:5] or question_tokens(question)[:5]
+    suggestions = []
+    for term in base_terms:
+        for hint_key, hints in QUERY_REWRITE_HINTS.items():
+            if hint_key in term or term in hint_key:
+                suggestions.extend(f"{' '.join(base_terms)} {hint}" for hint in hints)
+    if coverage_ratio < 0.55:
+        suggestions.append(f"{' '.join(base_terms)} 정확한 기준 적용 범위")
+    if official_count == 0:
+        suggestions.append(f"{' '.join(base_terms)} 정책 매뉴얼 최종 확정")
+    if stale_count:
+        suggestions.append(f"{' '.join(base_terms)} 최신 변경 이력 최근 업데이트")
+    if hits:
+        top_terms = ordered_unique(term for hit in hits[:5] for term in hit.matched_terms[:4])
+        if top_terms:
+            suggestions.append(" ".join(top_terms[:6]))
+    return ordered_unique(suggestions)[:4]
+
+
 def search_quality_notes(
     page_hits: list[SearchHit],
     official_count: int,
     stale_count: int,
     coverage_ratio: float,
+    scorecard: dict[str, object] | None = None,
 ) -> list[str]:
     notes = []
     if not page_hits:
@@ -1508,6 +1926,10 @@ def search_quality_notes(
         notes.append("질문 핵심어 일부만 근거에 매칭되었습니다. 질문을 더 구체화하거나 넓게 모드를 사용하세요.")
     if stale_count >= max(2, len(page_hits) // 2):
         notes.append("오래된 문서 비중이 높습니다. 최신순 정렬로 최근 변경 문서를 먼저 확인하세요.")
+    if scorecard and float(scorecard.get("diversity", 0)) < 0.35 and len(page_hits) >= 2:
+        notes.append("상위 근거가 일부 문서에 몰려 있습니다. 넓게 모드로 문서 다양성을 확인하세요.")
+    if len(page_hits) >= 2 and page_hits[0].score - page_hits[1].score < 3:
+        notes.append("상위 문서 간 점수 차가 작습니다. 결론 후보를 하나로 확정하기 전 본문을 대조하세요.")
     if not notes:
         notes.append("핵심어, 공식 문서, 최신성 기준에서 우선 검토 가능한 검색 결과입니다.")
     return notes[:4]

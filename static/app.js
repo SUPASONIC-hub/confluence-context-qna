@@ -3,11 +3,13 @@ const refreshHistoryButton = document.querySelector("#refreshHistory");
 const historySearchInput = document.querySelector("#historySearchInput");
 const askForm = document.querySelector("#askForm");
 const questionInput = document.querySelector("#questionInput");
+const questionQuality = document.querySelector("#questionQuality");
 const askButton = document.querySelector("#askButton");
 const answerOutput = document.querySelector("#answerOutput");
 const sourceList = document.querySelector("#sourceList");
 const sourceCount = document.querySelector("#sourceCount");
 const sourceSort = document.querySelector("#sourceSort");
+const sourceQualityFilter = document.querySelector("#sourceQualityFilter");
 const sourceSearchInput = document.querySelector("#sourceSearchInput");
 const resultMeta = document.querySelector("#resultMeta");
 const answerToc = document.querySelector("#answerToc");
@@ -29,6 +31,8 @@ const restoreBackupButton = document.querySelector("#restoreBackupButton");
 const restoreBackupInput = document.querySelector("#restoreBackupInput");
 const copyAnswerButton = document.querySelector("#copyAnswerButton");
 const rerunQuestionButton = document.querySelector("#rerunQuestionButton");
+const usefulFeedbackButton = document.querySelector("#usefulFeedbackButton");
+const badFeedbackButton = document.querySelector("#badFeedbackButton");
 const opsStatus = document.querySelector("#opsStatus");
 const ingestProgressBar = document.querySelector("#ingestProgressBar");
 const ingestProgressDetail = document.querySelector("#ingestProgressDetail");
@@ -37,14 +41,19 @@ const BATCH_SIZE = 80;
 const CLIENT_DB_NAME = "confluence-qna-client-backup";
 const CLIENT_DB_VERSION = 1;
 const CLIENT_STORE = "keyval";
+const INITIAL_SOURCE_GROUP_LIMIT = 24;
+const SOURCE_GROUP_INCREMENT = 24;
 let activeHistoryId = null;
 let allHistoryItems = [];
 let currentHits = [];
 let currentQuestion = "";
 let currentAnswer = "";
+let currentFeedback = "";
 let activeSourceType = "전체";
 let activeSourceSort = "score";
+let activeSourceQuality = "전체";
 let activeSourceKeyword = "";
+let visibleSourceGroupLimit = INITIAL_SOURCE_GROUP_LIMIT;
 let expandedSourcePages = new Set();
 let adminToken = localStorage.getItem("adminToken") || "";
 let adminTokenRequired = false;
@@ -55,6 +64,18 @@ let persistenceWarningShown = false;
 
 function apiUrl(path) {
   return new URL(path, window.location.origin).toString();
+}
+
+function debounce(callback, wait = 180) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => callback(...args), wait);
+  };
+}
+
+function resetSourceVisibleLimit() {
+  visibleSourceGroupLimit = INITIAL_SOURCE_GROUP_LIMIT;
 }
 
 function openClientDb() {
@@ -252,11 +273,13 @@ function sectionId(title) {
 
 function shouldRetryFetch(response, options) {
   const method = String(options?.method || "GET").toUpperCase();
-  return method === "GET" && [502, 503, 504].includes(response.status);
+  const path = options?.retryPostPath || "";
+  return (method === "GET" || path === "/api/ask") && [502, 503, 504].includes(response.status);
 }
 
 async function fetchJson(url, options) {
-  const attempts = String(options?.method || "GET").toUpperCase() === "GET" ? 3 : 1;
+  const method = String(options?.method || "GET").toUpperCase();
+  const attempts = method === "GET" ? 3 : options?.retryPostPath === "/api/ask" ? 2 : 1;
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
@@ -270,7 +293,7 @@ async function fetchJson(url, options) {
   throw lastError;
 }
 
-async function fetchJsonOnce(url, options) {
+async function fetchJsonOnce(url, options = {}) {
   const response = await fetch(apiUrl(url), options);
   const contentType = response.headers.get("content-type") || "";
   const body = await response.text();
@@ -323,6 +346,8 @@ function renderStats(payload) {
   const latest = formatDate(payload.latest_updated);
   const weightConfig = payload.weights || {};
   const persistence = payload.persistence || {};
+  const searchHealth = payload.search_health || {};
+  const feedback = payload.feedback || {};
   const rankingConfigured = Boolean(
     (weightConfig.official_spaces || []).length ||
     Object.keys(weightConfig.space_weights || {}).length ||
@@ -330,13 +355,19 @@ function renderStats(payload) {
   );
   stats.innerHTML = `
     <div><strong>${payload.page_count}</strong><span>문서</span></div>
+    <div><strong>${payload.chunk_count ?? 0}</strong><span>chunks</span></div>
     <div><strong>${(payload.spaces || []).length}</strong><span>스페이스</span></div>
     <div><strong>${payload.history_count}</strong><span>질문</span></div>
     <div class="${ingest.running ? "stat-active" : ""}"><strong>${escapeText(ingestLabel)}</strong><span>수집</span></div>
     <div><strong>${escapeText(latest)}</strong><span>최신</span></div>
     <div class="${payload.stale ? "stat-warning" : ""}"><strong>${payload.stale ? "캐시" : "실시간"}</strong><span>통계</span></div>
     <div class="${persistence.uses_persistent_database ? "" : "stat-warning"}"><strong>${persistence.uses_persistent_database ? "영구" : "임시"}</strong><span>저장소</span></div>
-    <div><strong>${rankingConfigured ? "보정" : "기본"}</strong><span>랭킹</span></div>
+    <div class="${rankingConfigured ? "" : "stat-warning"}"><strong>${rankingConfigured ? "보정" : "기본"}</strong><span>랭킹</span></div>
+    <div class="${searchHealth.official_spaces_configured ? "" : "stat-warning"}"><strong>${searchHealth.official_spaces_configured ? "설정" : "미설정"}</strong><span>공식공간</span></div>
+    <div class="${searchHealth.index_health === "ready" ? "" : "stat-warning"}"><strong>${escapeText(indexHealthLabel(searchHealth.index_health))}</strong><span>인덱스</span></div>
+    <div><strong>${escapeText(String(searchHealth.chunks_per_page ?? 0))}</strong><span>chunk/page</span></div>
+    <div><strong>${escapeText(String(searchHealth.ask_cache_entries ?? 0))}</strong><span>검색캐시</span></div>
+    <div><strong>${Number(feedback.useful || 0)}/${Number(feedback.bad || 0)}</strong><span>피드백</span></div>
   `;
   renderIngestProgress(ingest.progress);
   if (!persistence.uses_persistent_database && !persistenceWarningShown) {
@@ -344,6 +375,10 @@ function renderStats(payload) {
     const emptyHint = Number(payload.page_count || 0) === 0 ? " · 현재 서버 문서 0개" : "";
     renderOpsStatus(`임시 SQLite DB 사용 중${emptyHint} · Render DATABASE_URL(Postgres) 연결 필요`);
   }
+}
+
+function indexHealthLabel(value) {
+  return { ready: "정상", thin: "얇음", empty: "없음" }[value] || "확인";
 }
 
 function renderOpsStatus(message) {
@@ -395,6 +430,7 @@ function renderDiagnostics(payload) {
   const counts = payload.counts || {};
   const config = payload.config || {};
   const progress = payload.ingest_progress || {};
+  const searchHealth = payload.search_health || {};
   const missing = [
     ["URL", config.base_url_set],
     ["이메일", config.email_set],
@@ -407,7 +443,9 @@ function renderDiagnostics(payload) {
   const dbUrlHint = config.database_url_looks_internal ? " · Internal URL 의심" : "";
   renderOpsStatus(
     `${errorPrefix}점검 ${payload.status} · DB ${payload.database} · 문서 ${counts.pages ?? 0} · chunk ${counts.chunks ?? 0} · ` +
-    `${configLabel} · ${persistence}${dbHost}${dbUrlHint} · 스페이스 ${progress.completed_spaces ?? 0}/${progress.total_spaces ?? 0}`
+    `${configLabel} · ${persistence}${dbHost}${dbUrlHint} · 인덱스 ${indexHealthLabel(searchHealth.index_health)} · ` +
+    `chunk/page ${searchHealth.chunks_per_page ?? 0} · 공식공간 ${searchHealth.official_spaces_configured ? "설정" : "미설정"} · ` +
+    `스페이스 ${progress.completed_spaces ?? 0}/${progress.total_spaces ?? 0}`
   );
   renderIngestProgress(progress);
 }
@@ -446,6 +484,9 @@ function renderSourceFilters(hits) {
 
 function sortedHits(hits) {
   const result = [...hits];
+  if (activeSourceSort === "quality") {
+    return result.sort((a, b) => qualityWeight(b.quality) - qualityWeight(a.quality) || b.score - a.score);
+  }
   if (activeSourceSort === "recent") {
     return result.sort((a, b) => String(b.last_updated || "").localeCompare(String(a.last_updated || "")));
   }
@@ -453,6 +494,15 @@ function sortedHits(hits) {
     return result.sort((a, b) => String(a.document_type || "").localeCompare(String(b.document_type || "")) || b.score - a.score);
   }
   return result.sort((a, b) => b.score - a.score);
+}
+
+function qualityWeight(value) {
+  return { "강함": 3, "보통": 2, "약함": 1 }[value] || 0;
+}
+
+function qualityMatches(hit, quality) {
+  if (!quality || quality === "전체" || quality === "약함") return true;
+  return qualityWeight(hit.quality) >= qualityWeight(quality);
 }
 
 function groupHitsByPage(hits) {
@@ -469,12 +519,17 @@ function groupHitsByPage(hits) {
       created_at: hit.created_at,
       score: hit.score,
       keyword_coverage: Number(hit.keyword_coverage || 0),
+      quality: hit.quality || "보통",
       match_reasons: new Set(),
       matched_terms: new Set(),
+      ranking_signals: new Map(),
       chunks: [],
     };
     group.score = Math.max(Number(group.score || 0), Number(hit.score || 0));
     group.keyword_coverage = Math.max(Number(group.keyword_coverage || 0), Number(hit.keyword_coverage || 0));
+    if (hit.quality === "강함" || (hit.quality === "보통" && group.quality === "약함")) {
+      group.quality = hit.quality;
+    }
     if (hit.match_reason) {
       group.match_reasons.add(hit.match_reason);
     }
@@ -484,6 +539,11 @@ function groupHitsByPage(hits) {
     for (const term of hit.matched_terms || []) {
       group.matched_terms.add(term);
     }
+    for (const signal of hit.ranking_signals || []) {
+      if (signal.label && !group.ranking_signals.has(signal.label)) {
+        group.ranking_signals.set(signal.label, signal.value || "");
+      }
+    }
     group.chunks.push(hit);
     groups.set(key, group);
   }
@@ -491,6 +551,7 @@ function groupHitsByPage(hits) {
     ...group,
     match_reasons: [...group.match_reasons],
     matched_terms: [...group.matched_terms],
+    ranking_signals: [...group.ranking_signals.entries()].map(([label, value]) => ({ label, value })),
     chunks: sortedHits(group.chunks),
   }));
 }
@@ -513,22 +574,30 @@ function renderSources(hits = currentHits) {
   const filteredHits = activeSourceType === "전체"
     ? hits
     : hits.filter((hit) => (hit.document_type || "일반문서") === activeSourceType);
-  const visibleHits = sortedHits(filteredHits);
+  const visibleHits = sortedHits(filteredHits.filter((hit) => qualityMatches(hit, activeSourceQuality)));
   const keyword = activeSourceKeyword.trim().toLowerCase();
   const allGroups = groupHitsByPage(visibleHits);
   const visibleGroups = allGroups.filter((group) => groupMatchesKeyword(group, keyword));
+  const renderedGroups = visibleGroups.slice(0, visibleSourceGroupLimit);
   const matchedHitCount = visibleGroups.reduce((sum, group) => sum + group.chunks.length, 0);
   renderSourceFilters(hits);
   sourceCount.textContent = keyword
     ? `문서 ${visibleGroups.length}/${allGroups.length}개 · 근거 ${matchedHitCount}/${visibleHits.length}개`
-    : `문서 ${visibleGroups.length}개 · 근거 ${visibleHits.length}개`;
+    : `문서 ${visibleGroups.length}개 · 근거 ${visibleHits.length}/${hits.length}개`;
   if (!visibleGroups.length) {
     sourceList.innerHTML = `<div class="empty-state">표시할 근거 문서가 없습니다. 필터나 목록 검색어를 조정하세요.</div>`;
     return;
   }
-  sourceList.innerHTML = visibleGroups.map((group) => `
-    ${renderEvidenceGroup(group, { withAnchor: true })}
-  `).join("");
+  const remaining = visibleGroups.length - renderedGroups.length;
+  const loadMore = remaining > 0
+    ? `<button class="source-load-more" type="button" data-load-more-sources>
+        문서 ${Math.min(remaining, SOURCE_GROUP_INCREMENT)}개 더 보기 · 남은 ${remaining}개
+      </button>`
+    : "";
+  sourceList.innerHTML = `
+    ${renderedGroups.map((group) => renderEvidenceGroup(group, { withAnchor: true })).join("")}
+    ${loadMore}
+  `;
 }
 
 function renderEvidenceGroup(group, { compact = false, withAnchor = false } = {}) {
@@ -548,8 +617,9 @@ function renderEvidenceGroup(group, { compact = false, withAnchor = false } = {}
     : "";
   const coverageLabel = `${Math.round(Number(group.keyword_coverage || 0) * 100)}%`;
   const reasonLabel = group.match_reasons?.[0] || "문맥 유사 후보";
+  const stale = Number(group.chunks?.[0]?.freshness_score ?? 0) < 0;
   return `
-    <article class="source-card source-card-group ${compact ? "inline-evidence-card" : ""}" ${withAnchor ? `id="${escapeText(anchorId)}"` : ""}>
+    <article class="source-card source-card-group ${compact ? "inline-evidence-card" : ""}${stale ? " source-card-stale" : ""}" ${withAnchor ? `id="${escapeText(anchorId)}"` : ""}>
       <div class="source-card-head">
         <a href="${escapeText(group.url)}" target="_blank" rel="noreferrer">${escapeText(group.title)}</a>
         <span>${escapeText(group.document_type)}</span>
@@ -557,7 +627,14 @@ function renderEvidenceGroup(group, { compact = false, withAnchor = false } = {}
       <div class="source-meta">${escapeText(group.space)} · 근거 chunk ${group.chunks.length}개 · 등록 ${formatDate(group.created_at)} · 수정 ${formatDate(group.last_updated)} · 최고 score ${Number(group.score || 0).toFixed(2)}</div>
       <div class="match-diagnostics">
         <span>핵심어 ${escapeText(coverageLabel)}</span>
+        <span>품질 ${escapeText(group.quality || "보통")}</span>
         <span>${escapeText(reasonLabel)}</span>
+        ${stale ? "<span>오래된 후보</span>" : ""}
+      </div>
+      <div class="ranking-signals">
+        ${(group.ranking_signals || []).slice(0, 5).map((signal) => `
+          <span><b>${escapeText(signal.label)}</b>${escapeText(signal.value)}</span>
+        `).join("")}
       </div>
       <div class="term-chips">${group.matched_terms.slice(0, 10).map((term) => `<span>${escapeText(term)}</span>`).join("") || "<span>-</span>"}</div>
       ${detailButton}
@@ -608,15 +685,44 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function updateQuestionQuality() {
+  if (!questionQuality) return;
+  const value = questionInput.value.trim();
+  if (!value) {
+    questionQuality.textContent = "질문에 대상 업무, 판단 기준, 최신성/예외 여부를 함께 쓰면 검색 품질이 좋아집니다.";
+    questionQuality.className = "question-quality";
+    return;
+  }
+  const tokens = value.match(/[0-9A-Za-z가-힣_]{2,}/g) || [];
+  const hasPolicyIntent = /(정책|기준|가이드|매뉴얼|규정|policy|rule)/i.test(value);
+  const hasFreshness = /(최신|최근|변경|현재|최종|확정)/i.test(value);
+  const hasRisk = /(예외|리스크|문제|이슈|상충|정상|검증|확인)/i.test(value);
+  const score = Math.min(tokens.length, 6) + (hasPolicyIntent ? 2 : 0) + (hasFreshness ? 1 : 0) + (hasRisk ? 1 : 0);
+  if (score >= 8) {
+    questionQuality.textContent = "질문 품질 좋음 · 대상, 기준, 검증 맥락이 함께 들어 있습니다.";
+    questionQuality.className = "question-quality question-quality-good";
+  } else if (score >= 5) {
+    questionQuality.textContent = "질문 품질 보통 · 정책/기준 또는 최신/예외 표현을 더 넣으면 근거가 좁혀집니다.";
+    questionQuality.className = "question-quality question-quality-mid";
+  } else {
+    questionQuality.textContent = "질문 품질 낮음 · 업무명과 확인할 기준을 더 구체적으로 입력하세요.";
+    questionQuality.className = "question-quality question-quality-low";
+  }
+}
+
 function renderResult(payload) {
   activeHistoryId = payload.id;
   currentQuestion = payload.question || "";
   currentAnswer = payload.answer || "";
   currentHits = payload.hits || [];
+  currentFeedback = payload.feedback || "";
   activeSourceType = "전체";
+  activeSourceQuality = "전체";
   activeSourceKeyword = "";
+  resetSourceVisibleLimit();
   expandedSourcePages = new Set();
   if (sourceSearchInput) sourceSearchInput.value = "";
+  if (sourceQualityFilter) sourceQualityFilter.value = "전체";
   answerOutput.innerHTML = renderAnswerMarkdown(payload.answer);
   renderAnswerToc(payload.answer);
   const mode = payload.answer_mode ? ` · ${payload.answer_mode}` : "";
@@ -631,6 +737,7 @@ function renderResult(payload) {
   if (copyAnswerButton) {
     copyAnswerButton.disabled = !currentAnswer;
   }
+  renderFeedbackButtons();
   renderSearchMeta(meta);
   renderInlineEvidence(currentHits);
   renderSources(currentHits);
@@ -656,22 +763,78 @@ function renderSearchMeta(meta) {
     .slice(0, 5)
     .map((feature) => `<span>${escapeText(feature)}</span>`)
     .join("");
+  const querySuggestions = (meta.query_suggestions || [])
+    .slice(0, 4)
+    .map((query) => `
+      <button type="button" data-search-query="${escapeText(query)}">
+        ${escapeText(query)}
+      </button>
+    `)
+    .join("");
+  const derivedQueries = (meta.derived_queries || [])
+    .slice(0, 6)
+    .map((query) => `<span>${escapeText(query)}</span>`)
+    .join("");
+  const missingKeywords = (meta.missing_keywords || [])
+    .slice(0, 6)
+    .map((term) => `<span>${escapeText(term)}</span>`)
+    .join("");
+  const qualityDistribution = meta.quality_distribution || {};
+  const qualitySummary = ["강함", "보통", "약함"]
+    .map((label) => `${label} ${Number(qualityDistribution[label] || 0)}`)
+    .join(" · ");
+  const scorecard = meta.scorecard || {};
+  const elapsedLabel = meta.elapsed_ms ? `${Math.round(Number(meta.elapsed_ms) / 100) / 10}s` : "-";
+  const cacheLabel = meta.cache_hit
+    ? `hit ${Number(meta.cache_age_seconds || 0)}s`
+    : "miss";
+  const scorecardItems = [
+    ["종합", scorecard.overall, scorecard.label],
+    ["커버", scorecard.coverage],
+    ["공식", scorecard.official],
+    ["최신", scorecard.freshness],
+    ["다양", scorecard.diversity],
+    ["강도", scorecard.strength],
+  ].map(([label, value, text]) => `
+    <span><b>${escapeText(label)}</b>${escapeText(text || `${Math.round(Number(value || 0) * 100)}%`)}</span>
+  `).join("");
+  const remediationSteps = (meta.remediation_steps || [])
+    .slice(0, 4)
+    .map((step) => `<li>${escapeText(step)}</li>`)
+    .join("");
   const actions = recommendedSearchActions(meta);
   searchMetaPanel.innerHTML = `
     <div><strong>${escapeText(meta.confidence || "-")}</strong><span>신뢰도</span></div>
     <div><strong>${escapeText(modeLabel(meta.mode || "balanced"))}</strong><span>검색 모드</span></div>
     <div><strong>${escapeText(rankerLabel(meta.ranker || "keyword"))}</strong><span>랭킹 방식</span></div>
     <div><strong>${escapeText(String(meta.top_score ?? 0))}</strong><span>top score</span></div>
+    <div><strong>${escapeText(meta.score_margin == null ? "-" : String(meta.score_margin))}</strong><span>1-2위 차이</span></div>
     <div><strong>${escapeText(coverageLabel)}</strong><span>핵심어 매칭</span></div>
     <div><strong>${escapeText(String(meta.official_count ?? 0))}</strong><span>공식 근거</span></div>
     <div><strong>${escapeText(String(meta.stale_count ?? 0))}</strong><span>오래된 후보</span></div>
+    <div><strong>${escapeText(String(meta.derived_query_count ?? 1))}</strong><span>검색 변형</span></div>
+    <div><strong>${escapeText(modeLabel(meta.recommended_mode || "balanced"))}</strong><span>추천 모드</span></div>
+    <div class="${meta.slow_query ? "search-meta-warning" : ""}"><strong>${escapeText(elapsedLabel)}</strong><span>처리 시간</span></div>
+    <div><strong>${escapeText(cacheLabel)}</strong><span>검색 캐시</span></div>
     <div class="search-meta-wide"><strong>${docTypes}</strong><span>문서 유형</span></div>
+    <div class="search-meta-wide"><strong>${escapeText(qualitySummary)}</strong><span>품질 분포</span></div>
     <div><strong>${escapeText(formatDate(meta.latest_updated))}</strong><span>최신 근거</span></div>
     <div class="search-meta-keywords">${keywords || "<span>-</span>"}</div>
+    <div class="search-meta-keywords search-missing-keywords">${missingKeywords || "<span>누락 핵심어 없음</span>"}</div>
+    <div class="search-scorecard">${scorecardItems}</div>
     <div class="search-meta-keywords search-ranker-features">${rankerFeatures || "<span>-</span>"}</div>
+    <div class="search-meta-keywords search-derived-queries">${derivedQueries || "<span>기본 질문만 사용</span>"}</div>
     <div class="search-quality-notes">
       <strong>검색 품질 노트</strong>
       <ul>${qualityNotes || "<li>품질 진단 정보가 없습니다.</li>"}</ul>
+    </div>
+    <div class="search-remediation">
+      <strong>${escapeText(issueCodeLabel(meta.quality_issue_code || "healthy"))}</strong>
+      <ul>${remediationSteps || "<li>추가 조치가 없습니다.</li>"}</ul>
+    </div>
+    <div class="search-query-suggestions">
+      <strong>추천 검색어</strong>
+      <div>${querySuggestions || "<span>현재 질문으로 충분합니다.</span>"}</div>
     </div>
     <div class="search-next-actions">
       <strong>다음 액션</strong>
@@ -692,6 +855,20 @@ function recommendedSearchActions(meta) {
   const coverage = Number(meta.coverage_ratio ?? 0);
   const officialCount = Number(meta.official_count ?? 0);
   const staleCount = Number(meta.stale_count ?? 0);
+  const recommended = meta.recommended_mode || "";
+  const issueCode = meta.quality_issue_code || "";
+  if (issueCode === "no_results" || issueCode === "low_coverage" || issueCode === "low_diversity") {
+    actions.push({ type: "broad", label: "범위 확장" });
+  }
+  if (issueCode === "no_official_sources" || issueCode === "weak_top_score") {
+    actions.push({ type: "strict", label: "근거 정밀화" });
+  }
+  if (issueCode === "stale_sources") {
+    actions.push({ type: "recent", label: "최신 근거 확인" });
+  }
+  if (["strict", "broad", "recent"].includes(recommended) && recommended !== meta.mode) {
+    actions.push({ type: recommended, label: `${modeLabel(recommended)} 모드 추천` });
+  }
   if (confidence !== "높음") {
     actions.push({ type: "strict", label: "정밀 재검색" });
   }
@@ -707,7 +884,25 @@ function recommendedSearchActions(meta) {
   if (!actions.length) {
     actions.push({ type: "copy", label: "답변 복사" });
   }
-  return actions.slice(0, 4);
+  const seen = new Set();
+  return actions.filter((action) => {
+    if (seen.has(action.type)) return false;
+    seen.add(action.type);
+    return true;
+  }).slice(0, 4);
+}
+
+function issueCodeLabel(code) {
+  return {
+    no_results: "결과 없음",
+    low_coverage: "핵심어 매칭 부족",
+    no_official_sources: "공식 근거 부족",
+    stale_sources: "최신성 부족",
+    low_diversity: "문서 다양성 부족",
+    ambiguous_top_results: "상위 후보 모호",
+    weak_top_score: "상위 점수 약함",
+    healthy: "검색 품질 정상",
+  }[code] || "검색 품질 확인";
 }
 
 function setSearchMode(mode) {
@@ -822,6 +1017,7 @@ askForm.addEventListener("submit", async (event) => {
   try {
     const payload = await fetchJson("/api/ask", {
       method: "POST",
+      retryPostPath: "/api/ask",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question, search_mode: selectedSearchMode() }),
     });
@@ -830,7 +1026,21 @@ askForm.addEventListener("submit", async (event) => {
     questionInput.value = "";
     await refreshAfterAnswer();
   } catch (error) {
-    answerOutput.textContent = error.message;
+    if (isTransientGatewayError(error)) {
+      answerOutput.innerHTML = renderAnswerMarkdown(
+        [
+          "# 검색 요청이 지연되었습니다",
+          "",
+          "- Render 배포/재시작 중이거나 검색 후보가 많아 gateway timeout이 발생했을 수 있습니다.",
+          "- 잠시 후 같은 질문을 정밀 모드로 다시 실행하거나, 질문에 업무명/정책명/상태값을 더 구체적으로 넣어주세요.",
+          "- 이미 서버에서 처리가 끝났을 가능성이 있어 히스토리와 통계를 다시 확인합니다.",
+        ].join("\n")
+      );
+      renderOpsStatus("검색 요청 지연 · 히스토리/통계를 다시 확인합니다.");
+      Promise.allSettled([loadHistory(), loadStats()]);
+    } else {
+      answerOutput.textContent = error.message;
+    }
     resultMeta.textContent = "오류";
   } finally {
     askButton.disabled = false;
@@ -860,6 +1070,50 @@ if (copyAnswerButton) {
   });
 }
 
+function renderFeedbackButtons() {
+  const disabled = !activeHistoryId || String(activeHistoryId).startsWith("local-history-");
+  if (usefulFeedbackButton) {
+    usefulFeedbackButton.disabled = disabled;
+    usefulFeedbackButton.classList.toggle("active", currentFeedback === "useful");
+  }
+  if (badFeedbackButton) {
+    badFeedbackButton.disabled = disabled;
+    badFeedbackButton.classList.toggle("active", currentFeedback === "bad");
+  }
+}
+
+async function submitFeedback(feedback) {
+  if (!activeHistoryId || String(activeHistoryId).startsWith("local-history-")) {
+    renderOpsStatus("브라우저 히스토리는 서버 피드백 저장을 지원하지 않습니다.");
+    return;
+  }
+  try {
+    const payload = await fetchJson(`/api/history/${activeHistoryId}/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feedback }),
+    });
+    currentFeedback = payload.feedback || "";
+    renderFeedbackButtons();
+    renderOpsStatus(`검색 피드백 저장됨 · ${feedbackLabel(currentFeedback)}`);
+    await loadStats().catch(() => {});
+  } catch (error) {
+    renderOpsStatus(`피드백 저장 실패 · ${error.message}`);
+  }
+}
+
+function feedbackLabel(value) {
+  return { useful: "유용", partial: "부분적", bad: "부정확" }[value] || "-";
+}
+
+if (usefulFeedbackButton) {
+  usefulFeedbackButton.addEventListener("click", () => submitFeedback("useful"));
+}
+
+if (badFeedbackButton) {
+  badFeedbackButton.addEventListener("click", () => submitFeedback("bad"));
+}
+
 function selectedSearchMode() {
   return document.querySelector("input[name='searchMode']:checked")?.value || "balanced";
 }
@@ -874,6 +1128,13 @@ if (answerToc) {
 
 if (searchMetaPanel) {
   searchMetaPanel.addEventListener("click", (event) => {
+    const queryButton = event.target.closest("button[data-search-query]");
+    if (queryButton) {
+      questionInput.value = queryButton.dataset.searchQuery;
+      setSearchMode("balanced");
+      askForm.requestSubmit();
+      return;
+    }
     const button = event.target.closest("button[data-search-action]");
     if (!button) return;
     const action = button.dataset.searchAction;
@@ -919,11 +1180,14 @@ questionInput.addEventListener("keydown", (event) => {
   }
 });
 
+questionInput.addEventListener("input", updateQuestionQuality);
+
 if (quickPrompts) {
   quickPrompts.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-question]");
     if (!button) return;
     questionInput.value = button.dataset.question;
+    updateQuestionQuality();
     questionInput.focus();
   });
 }
@@ -935,9 +1199,7 @@ historyList.addEventListener("click", (event) => {
 });
 
 if (historySearchInput) {
-  historySearchInput.addEventListener("input", () => {
-    renderHistory();
-  });
+  historySearchInput.addEventListener("input", debounce(() => renderHistory()));
 }
 
 refreshHistoryButton.addEventListener("click", () => {
@@ -948,11 +1210,19 @@ sourceFilters.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-type]");
   if (!button) return;
   activeSourceType = button.dataset.type;
+  resetSourceVisibleLimit();
   renderSources(currentHits);
 });
 
 if (sourceList) {
   sourceList.addEventListener("click", (event) => {
+    const loadMoreButton = event.target.closest("button[data-load-more-sources]");
+    if (loadMoreButton) {
+      visibleSourceGroupLimit += SOURCE_GROUP_INCREMENT;
+      renderSources(currentHits);
+      loadMoreButton.scrollIntoView({ block: "nearest" });
+      return;
+    }
     const button = event.target.closest("button[data-source-toggle]");
     if (!button) return;
     const key = button.dataset.sourceToggle;
@@ -969,15 +1239,25 @@ if (sourceList) {
 if (sourceSort) {
   sourceSort.addEventListener("change", () => {
     activeSourceSort = sourceSort.value;
+    resetSourceVisibleLimit();
+    renderSources(currentHits);
+  });
+}
+
+if (sourceQualityFilter) {
+  sourceQualityFilter.addEventListener("change", () => {
+    activeSourceQuality = sourceQualityFilter.value;
+    resetSourceVisibleLimit();
     renderSources(currentHits);
   });
 }
 
 if (sourceSearchInput) {
-  sourceSearchInput.addEventListener("input", () => {
+  sourceSearchInput.addEventListener("input", debounce(() => {
     activeSourceKeyword = sourceSearchInput.value || "";
+    resetSourceVisibleLimit();
     renderSources(currentHits);
-  });
+  }));
 }
 
 saveTokenButton.addEventListener("click", () => {
@@ -1183,6 +1463,8 @@ Promise.all([loadStats(), loadHistory(), loadAdminConfig()]).catch((error) => {
   answerOutput.textContent = error.message;
   resultMeta.textContent = "초기화 오류";
 });
+
+updateQuestionQuality();
 
 setInterval(() => {
   loadStats().catch((error) => {

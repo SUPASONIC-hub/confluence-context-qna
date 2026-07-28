@@ -27,11 +27,21 @@ CONFLUENCE_OFFICIAL_SPACES=POLICY,OPS
 CONFLUENCE_SPACE_WEIGHTS=POLICY:5,OPS:3
 CONFLUENCE_DOCUMENT_TYPE_WEIGHTS=정책:4,매뉴얼:3,결정사항:3,이슈:2
 ADMIN_TOKEN=change_me
+SEARCH_TIME_BUDGET_SECONDS=8
+SLOW_SEARCH_MS=6500
+ASK_CACHE_TTL_SECONDS=600
+SEARCH_MAX_CANDIDATES=120
 ```
 
 `CONFLUENCE_OFFICIAL_SPACES`에는 공식 정책/운영 문서가 들어있는 스페이스 키를 쉼표로 입력합니다. 해당 스페이스의 검색 결과는 점수가 더 높게 계산됩니다.
 `CONFLUENCE_SPACE_WEIGHTS`와 `CONFLUENCE_DOCUMENT_TYPE_WEIGHTS`는 검색 랭킹 보정값입니다. `키:점수`를 쉼표로 연결합니다.
+검색 품질이 낮게 표시되면 먼저 `CONFLUENCE_OFFICIAL_SPACES`를 지정하고, 자주 쓰는 공식 스페이스에는 `CONFLUENCE_SPACE_WEIGHTS`를 2-5점 범위로 부여하세요. 앱의 검색 품질 패널은 핵심어 매칭률, 공식 근거 수, 오래된 후보 수, 추천 검색어를 함께 보여줍니다.
+운영 통계의 `인덱스`, `chunk/page`, `공식공간`, `랭킹` 카드가 경고 상태면 검색 품질이 낮아질 수 있습니다. 문서 수집 완료, 공식 스페이스 설정, 랭킹 가중치 설정을 먼저 확인하세요.
 `ADMIN_TOKEN`을 설정하면 수집/백업 API 호출 시 `X-Admin-Token` 헤더가 필요합니다.
+`SEARCH_TIME_BUDGET_SECONDS`는 검색 요청 하나가 후보 재랭킹에 쓰는 시간 예산입니다. Render gateway 502가 잦으면 5-7초로 낮추고, 질문을 정밀 모드로 유도하세요.
+`SEARCH_MAX_CANDIDATES`는 쿼리별 재랭킹 후보 상한입니다. 문서가 많은 환경에서 검색 응답이 느리면 72-96 범위로 낮춰 보세요.
+`ASK_CACHE_TTL_SECONDS`는 같은 질문/검색 모드 재실행 시 서버 메모리 캐시를 유지하는 시간입니다. 반복 질문이나 502 후 재시도 비용을 줄입니다.
+`요청 실패: 502 Render gateway error`가 표시되면 배포/재시작 중이거나 검색 후보가 많아 요청 시간이 길어진 상태일 수 있습니다. 앱은 `/api/ask`를 한 번 재시도하고, 실패 시 히스토리/통계를 다시 확인합니다.
 `DATABASE_URL`이 있으면 Postgres를 사용하고, 없으면 로컬 SQLite(`data/confluence_qna.sqlite3`)를 사용합니다.
 
 ## 2. 설치
@@ -195,6 +205,15 @@ ADMIN_TOKEN=Render에 설정한 ADMIN_TOKEN
 - 질문 의도별 문서 유형 가중치
 - 공식 스페이스 가중치
 - 질문 의도 키워드 확장 및 최신성 기반 재정렬
+- 한국어/영문 동의어와 약어 확장 기반 후보 검색
+- 질문 원문/띄어쓰기 제거 문구 exact match 보정
+- 검색 품질에 따른 추천 검색 모드 산정
+- coverage/official/freshness/diversity/strength 기반 검색 scorecard
+- 검색 실패 원인 코드와 조치 목록 생성
+- 근거별 랭킹 신호와 검색 결과 피드백 저장
+- 최근 유용/부정확 피드백 기반 랭킹 보정
+- 검색 시간 예산, 느린 검색 표시, Render 502 복구 안내
+- 같은 질문/모드 서버 캐시와 수집/복원 시 캐시 무효화
 - 핵심어 근접도와 제목 매칭 기반 검색 점수 보정
 - 다중 쿼리 검색 후보 생성
 - 균형/정밀/넓게/최신 검색 모드
@@ -203,6 +222,12 @@ ADMIN_TOKEN=Render에 설정한 ADMIN_TOKEN
 - 답변 결과 안에서 상위 근거 문서를 함께 확인하는 인라인 근거 UI
 - 인라인 근거에서 상세 근거 문서 카드로 바로 이동하는 앵커 액션
 - 핵심어 매칭률, 공식 근거 수, 오래된 후보 수, 랭킹 방식, 근거별 매칭 이유, 검색 품질 노트 표시
+- 검색 품질 기반 추천 검색어 생성 및 원클릭 재검색
+- 누락 핵심어, 결과 품질 분포, 품질순 근거 정렬 표시
+- 질문 입력 중 검색 품질 힌트와 운영 인덱스 건강도 표시
+- 근거 문서 목록 점진 렌더링과 필터 입력 디바운스로 대량 결과 화면 응답성 개선
+- 검색 품질 이슈별 맞춤 재검색 액션과 운영 점검 로그 표시
+- 유용/부정확 피드백 버튼과 운영 피드백 집계 표시
 - 검색 품질에 따른 정밀/넓게/최신 재검색과 공식 근거 필터 액션
 - 답변 섹션 탐색, 근거 정렬, 근거 목록 내 검색, 문서별 근거 펼침, 매칭 키워드 하이라이트 UI
 - 질문 히스토리에서 이전 질문을 다시 실행하는 재질문 흐름

@@ -6,7 +6,7 @@
     <title>Confluence Knowledge QNA</title>
     <link rel="icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='profile-logo.jpg', v='20260722-5') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260723-18') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='20260728-1') }}" />
   </head>
   <body>
     <div class="app-shell">
@@ -67,6 +67,7 @@
           </div>
           <form id="askForm" class="ask-form">
             <textarea id="questionInput" rows="3" placeholder="예: 현재 환불 정책 프로세스가 정상인가요?"></textarea>
+            <div id="questionQuality" class="question-quality">질문에 대상 업무, 판단 기준, 최신성/예외 여부를 함께 쓰면 검색 품질이 좋아집니다.</div>
             <div class="search-controls" aria-label="검색 모드">
               <label><input type="radio" name="searchMode" value="balanced" checked /> 균형</label>
               <label><input type="radio" name="searchMode" value="strict" /> 정밀</label>
@@ -91,6 +92,8 @@
               <h3>답변 결과</h3>
               <div class="result-actions">
                 <span id="resultMeta">대기 중</span>
+                <button id="usefulFeedbackButton" type="button" disabled>유용</button>
+                <button id="badFeedbackButton" type="button" disabled>부정확</button>
                 <button id="copyAnswerButton" type="button" disabled>복사</button>
                 <button id="rerunQuestionButton" type="button" disabled>다시 질문</button>
               </div>
@@ -108,8 +111,15 @@
                 <span id="sourceCount">0개</span>
                 <select id="sourceSort" aria-label="근거 정렬">
                   <option value="score">관련도</option>
+                  <option value="quality">품질순</option>
                   <option value="recent">최신순</option>
                   <option value="type">문서유형</option>
+                </select>
+                <select id="sourceQualityFilter" aria-label="근거 품질 필터">
+                  <option value="전체">전체 품질</option>
+                  <option value="강함">강함</option>
+                  <option value="보통">보통 이상</option>
+                  <option value="약함">약함 포함</option>
                 </select>
               </label>
             </div>
@@ -123,6 +133,6 @@
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js', v='20260723-18') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260728-1') }}"></script>
   </body>
 </html>
