@@ -400,11 +400,22 @@ def run_ingest_job(limit: int | None) -> None:
 
 
 def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
-    from confluence_qna import compact_text, essential_terms, hit_quality_label, phrase_candidates, recency_boost, term_is_covered
+    from confluence_qna import (
+        compact_text,
+        context_match_score,
+        context_profile,
+        essential_terms,
+        hit_quality_label,
+        phrase_candidates,
+        recency_boost,
+        term_is_covered,
+    )
 
     keywords = essential_terms(question)[:10]
+    profile = context_profile(question)
     covered = [term for term in keywords if term_is_covered(term, hit.matched_terms)]
     coverage = round(len(covered) / max(len(keywords), 1), 2) if keywords else 0
+    _, context_signals, context_diagnostics = context_match_score(hit.title, hit.text, profile)
     title = compact_text(hit.title)
     phrase_hits = [phrase for phrase in phrase_candidates(question)[:4] if phrase in title]
     freshness_score = recency_boost(hit.last_updated)
@@ -419,6 +430,8 @@ def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
         reasons.append("공식 근거 유형")
     if any(term in hit.title for term in covered):
         reasons.append("제목 매칭")
+    if context_signals:
+        reasons.append(context_signals[0])
     if not reasons:
         reasons.append("문맥 유사 후보")
     ranking_signals = []
@@ -430,6 +443,12 @@ def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
         ranking_signals.append({"label": "문구", "value": "제목 일치"})
     if any(term in hit.title for term in covered):
         ranking_signals.append({"label": "제목", "value": "매칭"})
+    if context_diagnostics.get("context_coverage"):
+        ranking_signals.append(
+            {"label": "문맥", "value": f"{round(float(context_diagnostics['context_coverage']) * 100)}%"}
+        )
+    for signal in context_signals[:2]:
+        ranking_signals.append({"label": "신호", "value": signal})
     if freshness_score > 0:
         ranking_signals.append({"label": "최신성", "value": "양호"})
     elif freshness_score < 0:
@@ -441,6 +460,11 @@ def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
         "covered_keywords": covered,
         "title_phrase_matches": phrase_hits,
         "freshness_score": round(freshness_score, 2),
+        "context_coverage": context_diagnostics.get("context_coverage", 0.0),
+        "context_signals": context_signals,
+        "context_subject_hits": context_diagnostics.get("subject_hits", []),
+        "context_intent_hits": context_diagnostics.get("intent_hits", []),
+        "context_constraint_hits": context_diagnostics.get("constraint_hits", []),
         "match_reason": " · ".join(reasons[:3]),
         "quality": hit_quality_label(hit, question),
         "ranking_signals": ranking_signals[:5],

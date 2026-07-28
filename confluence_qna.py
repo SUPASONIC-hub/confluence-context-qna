@@ -80,6 +80,16 @@ class SearchHit:
     matched_terms: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class QueryContext:
+    subjects: tuple[str, ...]
+    intents: tuple[str, ...]
+    constraints: tuple[str, ...]
+    temporal: tuple[str, ...]
+    polarity: tuple[str, ...]
+    focus_terms: tuple[str, ...]
+
+
 def load_config() -> Config:
     load_dotenv()
     space_weights = parse_weight_map(os.getenv("CONFLUENCE_SPACE_WEIGHTS", ""))
@@ -831,6 +841,21 @@ QUERY_REWRITE_HINTS = {
     "발주": ("발주 주문 오더 처리 기준", "발주 프로세스 예외"),
 }
 
+CONTEXT_INTENT_TERMS = {
+    "정책 기준": ("정책", "기준", "규정", "가이드", "가이드라인", "매뉴얼", "프로세스", "sop", "rule", "policy"),
+    "정상 검증": ("정상", "검증", "점검", "확인", "유효", "적용", "준수", "valid"),
+    "리스크 예외": ("리스크", "위험", "문제", "이슈", "예외", "상충", "장애", "누락", "오류"),
+    "결정 추적": ("결정", "결정사항", "확정", "승인", "최종", "회의록", "논의", "히스토리", "decision"),
+    "상태 정의": ("상태", "상태값", "status", "전이", "값", "정의"),
+    "변경 최신성": ("최신", "최근", "변경", "수정", "업데이트", "시행", "개정", "이력"),
+}
+
+CONTEXT_CONSTRAINT_TERMS = {
+    "조건": ("조건", "범위", "대상", "적용", "예외", "케이스", "상태값", "상태", "권한", "역할"),
+    "기간": ("최신", "최근", "현재", "최종", "변경", "개정", "시행", "이력", "업데이트"),
+    "부정": ("아닌", "안됨", "안되는", "불가", "없음", "누락", "오류", "실패", "문제", "중단"),
+}
+
 DOCUMENT_TYPE_KEYWORDS = {
     "정책": ("정책", "규정", "가이드", "가이드라인", "기준", "운영 기준", "프로세스", "SOP"),
     "매뉴얼": ("매뉴얼", "manual", "사용법", "처리 방법", "업무 방법", "운영 방법"),
@@ -915,6 +940,11 @@ STOPWORDS = {
     "무엇",
     "어떤",
     "질문",
+    "중인지",
+    "중인",
+    "확인해줘",
+    "알려줘",
+    "찾아줘",
 }
 
 KOREAN_SUFFIXES = (
@@ -925,7 +955,10 @@ KOREAN_SUFFIXES = (
     "부터는",
     "까지는",
     "이라는",
+    "해주세요",
+    "해줘",
     "라는",
+    "인지",
     "이며",
     "이고",
     "하고",
@@ -988,6 +1021,144 @@ def question_tokens(text: str) -> list[str]:
         for token in (normalize_token(raw) for raw in re.findall(r"[0-9A-Za-z가-힣_]+", text))
         if token
     )
+
+
+def context_profile(question: str) -> QueryContext:
+    tokens = question_tokens(question)
+    normalized = compact_text(question)
+    subjects = [
+        token
+        for token in tokens
+        if token not in INTENT_ONLY_TERMS
+        and token not in STOPWORDS
+        and not any(token in terms for terms in CONTEXT_INTENT_TERMS.values())
+        and not any(token in terms for terms in CONTEXT_CONSTRAINT_TERMS.values())
+    ]
+    intents = [
+        label
+        for label, terms in CONTEXT_INTENT_TERMS.items()
+        if any(term in normalized for term in terms)
+    ]
+    constraints = [
+        token
+        for token in tokens
+        if any(token in terms for terms in CONTEXT_CONSTRAINT_TERMS.values())
+        or token in {"상태값", "상태", "예외", "권한", "범위", "대상", "조건"}
+    ]
+    temporal = [
+        token
+        for token in tokens
+        if token in CONTEXT_CONSTRAINT_TERMS["기간"]
+    ]
+    polarity = [
+        token
+        for token in tokens
+        if token in CONTEXT_CONSTRAINT_TERMS["부정"]
+    ]
+    focus_terms = ordered_unique(
+        [
+            *subjects[:8],
+            *constraints[:5],
+            *temporal[:4],
+            *polarity[:4],
+            *(term for label in intents for term in CONTEXT_INTENT_TERMS.get(label, ())[:4]),
+        ]
+    )
+    return QueryContext(
+        subjects=tuple(subjects[:10]),
+        intents=tuple(intents),
+        constraints=tuple(constraints[:8]),
+        temporal=tuple(temporal[:6]),
+        polarity=tuple(polarity[:6]),
+        focus_terms=tuple(focus_terms[:18]),
+    )
+
+
+def query_context_summary(question: str) -> dict[str, object]:
+    profile = context_profile(question)
+    return {
+        "subjects": list(profile.subjects),
+        "intents": list(profile.intents),
+        "constraints": list(profile.constraints),
+        "temporal": list(profile.temporal),
+        "polarity": list(profile.polarity),
+        "focus_terms": list(profile.focus_terms),
+        "completeness": context_completeness(profile),
+    }
+
+
+def context_completeness(profile: QueryContext) -> float:
+    checks = [
+        bool(profile.subjects),
+        bool(profile.intents),
+        bool(profile.constraints),
+        bool(profile.temporal),
+        bool(profile.polarity) or "리스크 예외" in profile.intents or "정상 검증" in profile.intents,
+    ]
+    return round(sum(1 for item in checks if item) / len(checks), 2)
+
+
+def context_match_score(title: str, text: str, profile: QueryContext) -> tuple[float, list[str], dict[str, object]]:
+    haystack = f"{compact_text(title)} {compact_text(text)}"
+    title_text = compact_text(title)
+    score = 0.0
+    signals: list[str] = []
+    subject_hits = [term for term in profile.subjects if term in haystack or nospace_text(term) in nospace_text(haystack)]
+    if profile.subjects:
+        subject_ratio = len(subject_hits) / max(len(profile.subjects[:8]), 1)
+        score += subject_ratio * 14.0
+        if subject_ratio >= 0.5:
+            signals.append("대상 매칭")
+        if any(term in title_text for term in subject_hits):
+            score += 5.0
+            signals.append("대상 제목 매칭")
+    else:
+        subject_ratio = 0.0
+
+    intent_hits = []
+    for label in profile.intents:
+        terms = CONTEXT_INTENT_TERMS.get(label, ())
+        if any(term in haystack for term in terms):
+            intent_hits.append(label)
+    if profile.intents:
+        intent_ratio = len(intent_hits) / max(len(profile.intents), 1)
+        score += intent_ratio * 10.0
+        if intent_hits:
+            signals.append("의도 매칭")
+    else:
+        intent_ratio = 0.0
+
+    constraint_hits = [term for term in profile.constraints if term in haystack]
+    if profile.constraints:
+        constraint_ratio = len(constraint_hits) / max(len(profile.constraints), 1)
+        score += constraint_ratio * 7.0
+        if constraint_hits:
+            signals.append("조건 매칭")
+    else:
+        constraint_ratio = 0.0
+
+    temporal_hits = [term for term in profile.temporal if term in haystack]
+    if profile.temporal:
+        score += min(len(temporal_hits), 3) * 2.2
+        if temporal_hits:
+            signals.append("최신성 문맥")
+
+    polarity_hits = [term for term in profile.polarity if term in haystack]
+    if profile.polarity:
+        score += min(len(polarity_hits), 3) * 2.4
+        if polarity_hits:
+            signals.append("부정/예외 문맥")
+
+    overall = (subject_ratio * 0.44) + (intent_ratio * 0.34) + (constraint_ratio * 0.22)
+    diagnostics = {
+        "context_coverage": round(overall, 2),
+        "subject_hits": subject_hits[:6],
+        "intent_hits": intent_hits[:6],
+        "constraint_hits": constraint_hits[:6],
+        "temporal_hits": temporal_hits[:4],
+        "polarity_hits": polarity_hits[:4],
+    }
+    return score, ordered_unique(signals), diagnostics
 
 
 def synonyms_for(term: str) -> list[str]:
@@ -1100,6 +1271,7 @@ def context_score(
     title_no_space = nospace_text(row["title"])
     text_no_space = nospace_text(row["text"])
     document_type = classify_document(row["title"], row["text"])
+    profile = context_profile(query)
     query_semantic = semantic_tokens(query)
     title_semantic = semantic_tokens(row["title"])
     text_semantic = semantic_tokens(row["text"])
@@ -1113,6 +1285,7 @@ def context_score(
     sentence_overlap = best_sentence_overlap(query_semantic, row["text"])
     query_core = essentials[:8] or question_tokens(query)[:8]
     phrase_hits = adjacent_pair_hits(query_core, title) * 2 + adjacent_pair_hits(query_core, text)
+    context_bonus, context_signals, context_diagnostics = context_match_score(row["title"], row["text"], profile)
     score = recency_boost(row["last_updated"])
     score += semantic_overlap * 30.0
     score += title_overlap * 24.0
@@ -1121,6 +1294,7 @@ def context_score(
     score += exactness_bonus(row, query, essentials)
     score += proximity_bonus(title, essentials) * 1.8
     score += proximity_bonus(text, essentials) * 1.2
+    score += context_bonus
     matched_essentials = [term for term in essentials if term in title or term in text]
     if essentials:
         essential_ratio = len(matched_essentials) / max(len(essentials[:8]), 1)
@@ -1152,7 +1326,14 @@ def context_score(
             matched.append(phrase)
     if semantic_overlap < 0.08 and title_overlap < 0.08:
         score -= 12.0
-    return score, ordered_unique([*matched, *matched_essentials])[:16]
+    context_matches = [
+        *context_diagnostics.get("subject_hits", []),
+        *context_diagnostics.get("constraint_hits", []),
+        *context_diagnostics.get("temporal_hits", []),
+        *context_diagnostics.get("polarity_hits", []),
+        *context_signals,
+    ]
+    return score, ordered_unique([*matched, *matched_essentials, *context_matches])[:18]
 
 
 def classify_document(title: str, text: str) -> str:
@@ -1188,8 +1369,9 @@ def question_intents(question: str) -> set[str]:
 
 def extract_terms(question: str) -> list[str]:
     tokens = question_tokens(question)
+    profile = context_profile(question)
     expanded = []
-    for token in tokens:
+    for token in ordered_unique([*profile.focus_terms, *tokens]):
         expanded.append(token)
         expanded.extend(synonyms_for(token))
         for domain_term in DOMAIN_TERMS:
@@ -1205,11 +1387,16 @@ def extract_terms(question: str) -> list[str]:
         if trigger in question:
             expanded.extend(synonyms)
             expanded.extend(expand_terms_with_synonyms(synonyms))
+    for intent in profile.intents:
+        expanded.extend(CONTEXT_INTENT_TERMS.get(intent, ()))
     return ordered_unique(expanded)
 
 
 def essential_terms(question: str) -> list[str]:
     terms = []
+    profile = context_profile(question)
+    terms.extend(profile.subjects)
+    terms.extend(profile.constraints)
     for term in DOMAIN_TERMS:
         if term in question:
             terms.append(term)
@@ -1263,6 +1450,7 @@ def char_ngrams(value: str, sizes: tuple[int, ...] = (2, 3, 4)) -> list[str]:
 
 def phrase_candidates(question: str) -> list[str]:
     tokens = [token for token in question_tokens(question) if token not in INTENT_ONLY_TERMS]
+    profile = context_profile(question)
     phrases = []
     normalized = compact_text(question)
     if len(normalized) >= 4:
@@ -1271,12 +1459,15 @@ def phrase_candidates(question: str) -> list[str]:
     if len(no_space) >= 4 and no_space != normalized:
         phrases.append(no_space)
     phrases.extend(" ".join(tokens[index : index + 2]) for index in range(len(tokens) - 1))
+    phrases.extend(" ".join(profile.subjects[index : index + 2]) for index in range(len(profile.subjects) - 1))
+    phrases.extend(f"{subject} {constraint}" for subject in profile.subjects[:4] for constraint in profile.constraints[:3])
     phrases.extend(token for token in tokens if len(token) >= 4)
     return ordered_unique(phrases)
 
 
 def core_query_text(question: str) -> str:
-    terms = [term for term in essential_terms(question) if term not in INTENT_ONLY_TERMS]
+    profile = context_profile(question)
+    terms = [term for term in [*profile.subjects, *profile.constraints, *essential_terms(question)] if term not in INTENT_ONLY_TERMS]
     if len(terms) >= 2:
         return " ".join(terms[:8])
     return " ".join(question_tokens(question)[:8])
@@ -1322,12 +1513,15 @@ def exactness_bonus(row: sqlite3.Row, query: str, essentials: list[str]) -> floa
 
 def hit_quality_score(hit: SearchHit, question: str) -> float:
     keywords = essential_terms(question)[:10] or extract_terms(question)[:10]
+    profile = context_profile(question)
     coverage = coverage_ratio_for_terms(keywords, hit.matched_terms)
+    context_bonus, _, context_diagnostics = context_match_score(hit.title, hit.text, profile)
+    context_coverage = float(context_diagnostics.get("context_coverage", 0.0))
     official = 1.0 if hit.document_type in {"정책", "매뉴얼", "결정사항"} else 0.0
     title_match = 1.0 if any(term in compact_text(hit.title) for term in keywords[:6]) else 0.0
     exact_phrase = 1.0 if any(phrase in compact_text(hit.title) for phrase in phrase_candidates(question)[:4]) else 0.0
     fresh = max(min(recency_boost(hit.last_updated), 2.0), -0.8)
-    return hit.score + coverage * 18.0 + official * 6.0 + title_match * 5.0 + exact_phrase * 5.0 + fresh
+    return hit.score + coverage * 16.0 + context_coverage * 14.0 + min(context_bonus, 12.0) + official * 6.0 + title_match * 5.0 + exact_phrase * 5.0 + fresh
 
 
 def bm25_lite_score(title: str, text: str, terms: list[str], essentials: list[str]) -> tuple[float, list[str]]:
@@ -1419,6 +1613,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
     config = load_config()
     terms = extract_terms(query)
     essentials = essential_terms(query)
+    profile = context_profile(query)
     preferred_doc_types = question_intents(query)
     if not terms:
         return []
@@ -1431,7 +1626,7 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
     max_candidate_floor = parse_int_env("SEARCH_MAX_CANDIDATES", 96 if uses_postgres else 120)
     candidate_terms = [
         term
-        for term in ordered_unique([*essentials, *terms, *question_tokens(query), *expand_terms_with_synonyms(essentials)])
+        for term in ordered_unique([*profile.focus_terms, *essentials, *terms, *question_tokens(query), *expand_terms_with_synonyms(essentials)])
         if len(term) >= 2
     ][:candidate_limit]
     phrase_terms = [
@@ -1502,9 +1697,13 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
 
 def derive_queries(question: str, mode: str = "balanced") -> list[str]:
     base = question.strip()
+    profile = context_profile(question)
     essentials = " ".join(essential_terms(question))
     core = core_query_text(question)
     phrases = phrase_candidates(question)[:4]
+    subject_query = " ".join(profile.subjects[:6])
+    intent_query = " ".join(term for intent in profile.intents for term in CONTEXT_INTENT_TERMS.get(intent, ())[:3])
+    context_query = " ".join(ordered_unique([*profile.subjects[:5], *profile.constraints[:4], *profile.temporal[:3], *profile.polarity[:3]]))
     rewrite_hints = [
         f"{essentials} {hint}"
         for term in essential_terms(question)[:6]
@@ -1515,6 +1714,8 @@ def derive_queries(question: str, mode: str = "balanced") -> list[str]:
     synonym_query = " ".join(expand_terms_with_synonyms(essential_terms(question)[:6])[:10])
     prefixes = [
         core,
+        context_query,
+        f"{subject_query} {intent_query}".strip(),
         *phrases,
         f"{essentials} 최신 정책 최종 정의",
         f"{essentials} 상태값 기준",
@@ -1537,7 +1738,22 @@ def derive_queries(question: str, mode: str = "balanced") -> list[str]:
         )
     elif mode == "recent":
         prefixes.insert(0, f"{essentials} 최신 변경 최근 업데이트")
-    return ordered_unique([base, *rewrite_hints, *prefixes])
+    return compact_query_variants([base, core, context_query, *rewrite_hints, *prefixes])
+
+
+def compact_query_variants(queries: Iterable[str]) -> list[str]:
+    variants = []
+    seen_signatures = set()
+    for query in queries:
+        terms = ordered_unique(question_tokens(query))
+        if not terms:
+            continue
+        signature = " ".join(terms[:8])
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        variants.append(" ".join(terms[:12]))
+    return variants
 
 
 def diversify_hits(hits: list[SearchHit], limit: int = 18, per_page_limit: int = 2) -> list[SearchHit]:
@@ -1577,7 +1793,10 @@ def final_rank_key(hit: SearchHit, question: str, mode: str) -> tuple[float, str
     base_score = mode_rank_key(hit, mode)[0]
     quality = hit_quality_score(hit, question)
     keywords = essential_terms(question)[:10] or extract_terms(question)[:10]
+    profile = context_profile(question)
     coverage = coverage_ratio_for_terms(keywords, hit.matched_terms)
+    _, _, context_diagnostics = context_match_score(hit.title, hit.text, profile)
+    context_coverage = float(context_diagnostics.get("context_coverage", 0.0))
     phrase_bonus = 0.0
     title = compact_text(hit.title)
     text = compact_text(hit.text)
@@ -1587,7 +1806,16 @@ def final_rank_key(hit: SearchHit, question: str, mode: str) -> tuple[float, str
         elif phrase in text:
             phrase_bonus += 1.5
     coverage_penalty = 8.0 if keywords and coverage < 0.25 else 0.0
-    return (base_score * 0.66 + quality * 0.34 + min(phrase_bonus, 10.0) - coverage_penalty, hit.last_updated)
+    context_penalty = 7.0 if profile.subjects and context_coverage < 0.25 else 0.0
+    return (
+        base_score * 0.58
+        + quality * 0.34
+        + context_coverage * 9.0
+        + min(phrase_bonus, 10.0)
+        - coverage_penalty
+        - context_penalty,
+        hit.last_updated,
+    )
 
 
 def feedback_adjustment_map(conn: sqlite3.Connection) -> dict[str, float]:
@@ -1684,6 +1912,13 @@ def merged_hits(conn: sqlite3.Connection, question: str, mode: str = "balanced")
 def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") -> dict[str, object]:
     page_hits = unique_page_hits(hits)
     keywords = essential_terms(question)[:10] or extract_terms(question)[:10]
+    profile = context_profile(question)
+    context = query_context_summary(question)
+    context_coverages = [
+        context_match_score(hit.title, hit.text, profile)[2].get("context_coverage", 0.0)
+        for hit in page_hits[:8]
+    ]
+    context_coverage = round(sum(float(value) for value in context_coverages) / max(len(context_coverages), 1), 2) if context_coverages else 0.0
     official_count = sum(1 for hit in page_hits if hit.document_type in {"정책", "매뉴얼", "결정사항"})
     stale_count = sum(1 for hit in page_hits if recency_boost(hit.last_updated) < 0)
     matched_keywords = {
@@ -1703,6 +1938,8 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
         "mode": mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced",
         "confidence": confidence_label(page_hits),
         "keywords": keywords,
+        "query_context": context,
+        "context_coverage": context_coverage,
         "preferred_doc_types": sorted(question_intents(question)),
         "page_count": len(page_hits),
         "chunk_count": len(hits),
@@ -1724,6 +1961,8 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
         "ranker_features": [
             "BM25-lite 길이 보정",
             "문맥 overlap",
+            "질문 문맥 프로파일",
+            "대상/의도/조건 매칭",
             "동의어/영문 약어 확장",
             "질문 문구 exactness",
             "띄어쓰기 무시 phrase",

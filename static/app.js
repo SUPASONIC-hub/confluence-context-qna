@@ -519,19 +519,25 @@ function groupHitsByPage(hits) {
       created_at: hit.created_at,
       score: hit.score,
       keyword_coverage: Number(hit.keyword_coverage || 0),
+      context_coverage: Number(hit.context_coverage || 0),
       quality: hit.quality || "보통",
       match_reasons: new Set(),
+      context_signals: new Set(),
       matched_terms: new Set(),
       ranking_signals: new Map(),
       chunks: [],
     };
     group.score = Math.max(Number(group.score || 0), Number(hit.score || 0));
     group.keyword_coverage = Math.max(Number(group.keyword_coverage || 0), Number(hit.keyword_coverage || 0));
+    group.context_coverage = Math.max(Number(group.context_coverage || 0), Number(hit.context_coverage || 0));
     if (hit.quality === "강함" || (hit.quality === "보통" && group.quality === "약함")) {
       group.quality = hit.quality;
     }
     if (hit.match_reason) {
       group.match_reasons.add(hit.match_reason);
+    }
+    for (const signal of hit.context_signals || []) {
+      group.context_signals.add(signal);
     }
     if (String(hit.last_updated || "") > String(group.last_updated || "")) {
       group.last_updated = hit.last_updated;
@@ -550,6 +556,7 @@ function groupHitsByPage(hits) {
   return [...groups.values()].map((group) => ({
     ...group,
     match_reasons: [...group.match_reasons],
+    context_signals: [...group.context_signals],
     matched_terms: [...group.matched_terms],
     ranking_signals: [...group.ranking_signals.entries()].map(([label, value]) => ({ label, value })),
     chunks: sortedHits(group.chunks),
@@ -616,6 +623,7 @@ function renderEvidenceGroup(group, { compact = false, withAnchor = false } = {}
     ? `<button class="source-jump" type="button" data-source-page="${escapeText(anchorId)}">상세 근거 보기</button>`
     : "";
   const coverageLabel = `${Math.round(Number(group.keyword_coverage || 0) * 100)}%`;
+  const contextLabel = `${Math.round(Number(group.context_coverage || 0) * 100)}%`;
   const reasonLabel = group.match_reasons?.[0] || "문맥 유사 후보";
   const stale = Number(group.chunks?.[0]?.freshness_score ?? 0) < 0;
   return `
@@ -627,9 +635,13 @@ function renderEvidenceGroup(group, { compact = false, withAnchor = false } = {}
       <div class="source-meta">${escapeText(group.space)} · 근거 chunk ${group.chunks.length}개 · 등록 ${formatDate(group.created_at)} · 수정 ${formatDate(group.last_updated)} · 최고 score ${Number(group.score || 0).toFixed(2)}</div>
       <div class="match-diagnostics">
         <span>핵심어 ${escapeText(coverageLabel)}</span>
+        <span>문맥 ${escapeText(contextLabel)}</span>
         <span>품질 ${escapeText(group.quality || "보통")}</span>
         <span>${escapeText(reasonLabel)}</span>
         ${stale ? "<span>오래된 후보</span>" : ""}
+      </div>
+      <div class="context-signals">
+        ${(group.context_signals || []).slice(0, 5).map((signal) => `<span>${escapeText(signal)}</span>`).join("")}
       </div>
       <div class="ranking-signals">
         ${(group.ranking_signals || []).slice(0, 5).map((signal) => `
@@ -784,6 +796,17 @@ function renderSearchMeta(meta) {
     .map((label) => `${label} ${Number(qualityDistribution[label] || 0)}`)
     .join(" · ");
   const scorecard = meta.scorecard || {};
+  const queryContext = meta.query_context || {};
+  const contextCoverageLabel = `${Math.round(Number(meta.context_coverage || 0) * 100)}%`;
+  const contextProfileItems = [
+    ["대상", queryContext.subjects || []],
+    ["의도", queryContext.intents || []],
+    ["조건", queryContext.constraints || []],
+    ["기간", queryContext.temporal || []],
+    ["예외", queryContext.polarity || []],
+  ].map(([label, values]) => `
+    <span><b>${escapeText(label)}</b>${escapeText((values || []).slice(0, 5).join(", ") || "-")}</span>
+  `).join("");
   const elapsedLabel = meta.elapsed_ms ? `${Math.round(Number(meta.elapsed_ms) / 100) / 10}s` : "-";
   const cacheLabel = meta.cache_hit
     ? `hit ${Number(meta.cache_age_seconds || 0)}s`
@@ -795,6 +818,7 @@ function renderSearchMeta(meta) {
     ["최신", scorecard.freshness],
     ["다양", scorecard.diversity],
     ["강도", scorecard.strength],
+    ["문맥", meta.context_coverage],
   ].map(([label, value, text]) => `
     <span><b>${escapeText(label)}</b>${escapeText(text || `${Math.round(Number(value || 0) * 100)}%`)}</span>
   `).join("");
@@ -810,6 +834,7 @@ function renderSearchMeta(meta) {
     <div><strong>${escapeText(String(meta.top_score ?? 0))}</strong><span>top score</span></div>
     <div><strong>${escapeText(meta.score_margin == null ? "-" : String(meta.score_margin))}</strong><span>1-2위 차이</span></div>
     <div><strong>${escapeText(coverageLabel)}</strong><span>핵심어 매칭</span></div>
+    <div><strong>${escapeText(contextCoverageLabel)}</strong><span>문맥 매칭</span></div>
     <div><strong>${escapeText(String(meta.official_count ?? 0))}</strong><span>공식 근거</span></div>
     <div><strong>${escapeText(String(meta.stale_count ?? 0))}</strong><span>오래된 후보</span></div>
     <div><strong>${escapeText(String(meta.derived_query_count ?? 1))}</strong><span>검색 변형</span></div>
@@ -818,7 +843,9 @@ function renderSearchMeta(meta) {
     <div><strong>${escapeText(cacheLabel)}</strong><span>검색 캐시</span></div>
     <div class="search-meta-wide"><strong>${docTypes}</strong><span>문서 유형</span></div>
     <div class="search-meta-wide"><strong>${escapeText(qualitySummary)}</strong><span>품질 분포</span></div>
+    <div><strong>${escapeText(`${Math.round(Number(queryContext.completeness || 0) * 100)}%`)}</strong><span>질문 문맥성</span></div>
     <div><strong>${escapeText(formatDate(meta.latest_updated))}</strong><span>최신 근거</span></div>
+    <div class="search-context-profile">${contextProfileItems}</div>
     <div class="search-meta-keywords">${keywords || "<span>-</span>"}</div>
     <div class="search-meta-keywords search-missing-keywords">${missingKeywords || "<span>누락 핵심어 없음</span>"}</div>
     <div class="search-scorecard">${scorecardItems}</div>

@@ -841,6 +841,13 @@ button[type="submit"]:disabled {
   grid-column: 1 / -1;
 }
 
+.search-context-profile {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-column: 1 / -1;
+}
+
 .search-scorecard span {
   display: inline-flex;
   align-items: center;
@@ -855,7 +862,28 @@ button[type="submit"]:disabled {
   font-weight: 800;
 }
 
+.search-context-profile span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 8px;
+  background: #f6fbfd;
+  color: var(--blue-deep);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: normal;
+}
+
 .search-scorecard b {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.search-context-profile b {
   color: var(--muted);
   font-size: 10px;
 }
@@ -1121,6 +1149,27 @@ button[type="submit"]:disabled {
   font-size: 10px;
 }
 
+.context-signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.context-signals:empty {
+  display: none;
+}
+
+.context-signals span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #f6fbfd;
+  color: var(--blue-deep);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .source-jump,
 .source-toggle {
   min-height: 30px;
@@ -1345,6 +1394,7 @@ mark {
   .search-query-suggestions,
   .search-next-actions,
   .search-scorecard,
+  .search-context-profile,
   .search-meta-keywords {
     grid-column: auto;
   }
