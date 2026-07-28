@@ -479,6 +479,7 @@ def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
     title_term_hits = [term for term in covered if term in title]
     body_term_hits = [term for term in covered if term in text and term not in title_term_hits]
     phrase_hits = [phrase for phrase in phrase_candidates(question)[:4] if phrase in title]
+    body_phrase_hits = [phrase for phrase in phrase_candidates(question)[:6] if phrase in text and phrase not in phrase_hits]
     freshness_score = recency_boost(hit.last_updated)
     reasons = []
     if coverage >= 0.75:
@@ -487,6 +488,8 @@ def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
         reasons.append("핵심어 일부 매칭")
     if phrase_hits:
         reasons.append("질문 문구 제목 매칭")
+    elif body_phrase_hits:
+        reasons.append("질문 문구 본문 매칭")
     if hit.document_type in {"정책", "매뉴얼", "결정사항"}:
         reasons.append("공식 근거 유형")
     if any(term in hit.title for term in covered):
@@ -504,6 +507,8 @@ def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
         ranking_signals.append({"label": "공식성", "value": hit.document_type})
     if phrase_hits:
         ranking_signals.append({"label": "문구", "value": "제목 일치"})
+    if body_phrase_hits:
+        ranking_signals.append({"label": "본문문구", "value": f"{len(body_phrase_hits)}개"})
     if any(term in hit.title for term in covered):
         ranking_signals.append({"label": "제목", "value": "매칭"})
     if body_term_hits:
@@ -527,12 +532,14 @@ def hit_match_diagnostics(hit, question: str) -> dict[str, object]:
         "body_term_hits": body_term_hits,
         "match_scope": "title+body" if title_term_hits and body_term_hits else "title" if title_term_hits else "body" if body_term_hits else "semantic",
         "title_phrase_matches": phrase_hits,
+        "body_phrase_matches": body_phrase_hits[:4],
         "freshness_score": round(freshness_score, 2),
         "context_coverage": context_diagnostics.get("context_coverage", 0.0),
         "context_signals": context_signals,
         "context_subject_hits": context_diagnostics.get("subject_hits", []),
         "context_intent_hits": context_diagnostics.get("intent_hits", []),
         "context_constraint_hits": context_diagnostics.get("constraint_hits", []),
+        "context_sentence_hits": context_diagnostics.get("sentence_context_hits", []),
         "match_reason": " · ".join(reasons[:3]),
         "quality": hit_quality_label(hit, question),
         "ranking_signals": ranking_signals[:5],

@@ -1263,17 +1263,22 @@ def context_completeness(profile: QueryContext) -> float:
 def context_match_score(title: str, text: str, profile: QueryContext) -> tuple[float, list[str], dict[str, object]]:
     haystack = f"{compact_text(title)} {compact_text(text)}"
     title_text = compact_text(title)
+    body_text = compact_text(text)
     score = 0.0
     signals: list[str] = []
-    subject_hits = [term for term in profile.subjects if term in haystack or nospace_text(term) in nospace_text(haystack)]
+    subject_hits = [term for term in profile.subjects if term_in_text(term, haystack)]
+    body_subject_hits = [term for term in profile.subjects if term_in_text(term, body_text)]
     if profile.subjects:
         subject_ratio = len(subject_hits) / max(len(profile.subjects[:8]), 1)
         score += subject_ratio * 14.0
         if subject_ratio >= 0.5:
             signals.append("대상 매칭")
-        if any(term in title_text for term in subject_hits):
+        if any(term_in_text(term, title_text) for term in subject_hits):
             score += 5.0
             signals.append("대상 제목 매칭")
+        if body_subject_hits:
+            score += min(len(body_subject_hits), 4) * 1.8
+            signals.append("대상 본문 매칭")
     else:
         subject_ratio = 0.0
 
@@ -1290,26 +1295,35 @@ def context_match_score(title: str, text: str, profile: QueryContext) -> tuple[f
     else:
         intent_ratio = 0.0
 
-    constraint_hits = [term for term in profile.constraints if term in haystack]
+    constraint_hits = [term for term in profile.constraints if term_in_text(term, haystack)]
+    body_constraint_hits = [term for term in profile.constraints if term_in_text(term, body_text)]
     if profile.constraints:
         constraint_ratio = len(constraint_hits) / max(len(profile.constraints), 1)
         score += constraint_ratio * 7.0
         if constraint_hits:
             signals.append("조건 매칭")
+        if body_subject_hits and body_constraint_hits:
+            score += 6.0
+            signals.append("대상-조건 본문 동시매칭")
     else:
         constraint_ratio = 0.0
 
-    temporal_hits = [term for term in profile.temporal if term in haystack]
+    temporal_hits = [term for term in profile.temporal if term_in_text(term, haystack)]
     if profile.temporal:
         score += min(len(temporal_hits), 3) * 2.2
         if temporal_hits:
             signals.append("최신성 문맥")
 
-    polarity_hits = [term for term in profile.polarity if term in haystack]
+    polarity_hits = [term for term in profile.polarity if term_in_text(term, haystack)]
     if profile.polarity:
         score += min(len(polarity_hits), 3) * 2.4
         if polarity_hits:
             signals.append("부정/예외 문맥")
+
+    sentence_score, sentence_hits = best_context_sentence_match(text, profile)
+    if sentence_score:
+        score += sentence_score * 9.0
+        signals.append("문장 단위 문맥 매칭")
 
     overall = (subject_ratio * 0.44) + (intent_ratio * 0.34) + (constraint_ratio * 0.22)
     diagnostics = {
@@ -1319,8 +1333,49 @@ def context_match_score(title: str, text: str, profile: QueryContext) -> tuple[f
         "constraint_hits": constraint_hits[:6],
         "temporal_hits": temporal_hits[:4],
         "polarity_hits": polarity_hits[:4],
+        "body_subject_hits": body_subject_hits[:6],
+        "body_constraint_hits": body_constraint_hits[:6],
+        "sentence_context_hits": sentence_hits[:8],
     }
     return score, ordered_unique(signals), diagnostics
+
+
+def term_in_text(term: str, text: str) -> bool:
+    if not term:
+        return False
+    normalized_term = compact_text(term)
+    normalized_text = compact_text(text)
+    return normalized_term in normalized_text or nospace_text(normalized_term) in nospace_text(normalized_text)
+
+
+def best_context_sentence_match(text: str, profile: QueryContext) -> tuple[float, list[str]]:
+    important_groups = [
+        list(profile.subjects[:6]),
+        list(profile.constraints[:4]),
+        [term for label in profile.intents for term in CONTEXT_INTENT_TERMS.get(label, ())[:3]],
+        list(profile.temporal[:3]),
+        list(profile.polarity[:3]),
+    ]
+    important_groups = [group for group in important_groups if group]
+    if not important_groups:
+        return 0.0, []
+    best_score = 0.0
+    best_hits: list[str] = []
+    for sentence in sentence_units(text)[:18]:
+        hits = []
+        covered_groups = 0
+        for group in important_groups:
+            group_hits = [term for term in group if term_in_text(term, sentence)]
+            if group_hits:
+                covered_groups += 1
+                hits.extend(group_hits[:2])
+        if not hits:
+            continue
+        score = covered_groups / max(len(important_groups), 1)
+        if score > best_score:
+            best_score = score
+            best_hits = ordered_unique(hits)
+    return best_score, best_hits
 
 
 def synonyms_for(term: str) -> list[str]:
@@ -1447,22 +1502,28 @@ def context_score(
     sentence_overlap = best_sentence_overlap(query_semantic, row["text"])
     query_core = essentials[:8] or question_tokens(query)[:8]
     phrase_hits = adjacent_pair_hits(query_core, title) * 2 + adjacent_pair_hits(query_core, text)
+    sentence_context_score, sentence_context_hits = best_context_sentence_match(row["text"], profile)
     context_bonus, context_signals, context_diagnostics = context_match_score(row["title"], row["text"], profile)
     score = recency_boost(row["last_updated"])
     score += semantic_overlap * 30.0
     score += title_overlap * 24.0
     score += sentence_overlap * 28.0
+    score += sentence_context_score * 16.0
     score += min(phrase_hits, 6) * 4.0
     score += exactness_bonus(row, query, essentials)
     score += proximity_bonus(title, essentials) * 1.8
     score += proximity_bonus(text, essentials) * 1.2
     score += context_bonus
     matched_essentials = [term for term in essentials if term in title or term in text]
+    body_essential_hits = [term for term in essentials if term_in_text(term, text)]
     if essentials:
         essential_ratio = len(matched_essentials) / max(len(essentials[:8]), 1)
         score += essential_ratio * 18.0
+        score += min(len(body_essential_hits), 6) * 2.4
         if not matched_essentials and semantic_overlap < 0.18:
             score -= 18.0
+        if matched_essentials and not body_essential_hits and title_overlap > semantic_overlap * 1.7:
+            score -= 5.0
     if document_type in preferred_doc_types:
         score += 7.0
     elif preferred_doc_types and document_type == "일반문서":
@@ -1493,6 +1554,7 @@ def context_score(
         *context_diagnostics.get("constraint_hits", []),
         *context_diagnostics.get("temporal_hits", []),
         *context_diagnostics.get("polarity_hits", []),
+        *sentence_context_hits,
         *context_signals,
     ]
     return score, ordered_unique([*matched, *matched_essentials, *context_matches])[:18]
@@ -1741,8 +1803,16 @@ def term_score(
     for phrase in phrase_candidates(query)[:8]:
         if phrase in title:
             score += 12.0
+            matched.append(phrase)
         elif phrase in text:
-            score += 4.0
+            score += 6.0
+            matched.append(phrase)
+        elif nospace_text(phrase) in nospace_text(row["title"]):
+            score += 9.0
+            matched.append(phrase)
+        elif nospace_text(phrase) in nospace_text(row["text"]):
+            score += 4.5
+            matched.append(phrase)
     score += exactness_bonus(row, query, essentials)
     score += proximity_bonus(title, essentials) * 1.6
     score += proximity_bonus(text, essentials)
@@ -1841,6 +1911,33 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
 
     if not uses_postgres and len(rows_by_id) >= max(limit * 6, 36):
         candidate_terms = candidate_terms[: max(4, min(8, len(essentials) + 3))]
+
+    exact_phrase_terms = [
+        phrase
+        for phrase in phrase_candidates(query)[:6 if uses_postgres else 10]
+        if len(phrase) >= 4 and len(phrase) <= 80
+    ]
+    if exact_phrase_terms and len(rows_by_id) < max(limit * 6, 36):
+        phrase_clauses = []
+        phrase_params = []
+        for phrase in exact_phrase_terms:
+            phrase_clauses.append("(LOWER(title) LIKE ? OR LOWER(text) LIKE ?)")
+            like = f"%{phrase}%"
+            phrase_params.extend([like, like])
+        phrase_rows = conn.execute(
+            f"""
+            SELECT page_id, chunk_index, title, text, created_at, last_updated, author, space, url
+            FROM page_chunks
+            WHERE {" OR ".join(phrase_clauses)}
+            {"ORDER BY last_updated DESC" if not uses_postgres else ""}
+            LIMIT ?
+            """,
+            [*phrase_params, max(limit * 7, 42)],
+        ).fetchall()
+        rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in phrase_rows})
+
+    if deadline and time.monotonic() >= deadline:
+        return []
 
     strict_like_terms = [term for term in profile.subjects[:3] if len(term) >= 2]
     if strict_like_terms and len(rows_by_id) < max(limit * 5, 30):
@@ -2170,6 +2267,8 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
     official_count = sum(1 for hit in page_hits if hit.document_type in {"정책", "매뉴얼", "결정사항"})
     stale_count = sum(1 for hit in page_hits if recency_boost(hit.last_updated) < 0)
     title_body_distribution = match_scope_distribution(page_hits, keywords)
+    scope_coverage = match_scope_coverage(page_hits, keywords)
+    context_gaps = query_context_gaps(page_hits, profile)
     matched_keywords = {
         keyword
         for hit in hits
@@ -2197,8 +2296,10 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
         "official_count": official_count,
         "stale_count": stale_count,
         "match_scope_distribution": title_body_distribution,
+        "match_scope_coverage": scope_coverage,
         "coverage_ratio": coverage_ratio,
         "missing_keywords": missing_keywords[:6],
+        "context_gaps": context_gaps,
         "quality_distribution": quality_distribution,
         "scorecard": scorecard,
         "derived_query_count": len(derived_queries),
@@ -2222,6 +2323,8 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
             "반복 후보 consensus 가점",
             "문서 단위 다중 근거 가점",
             "정밀 모드 공식 근거 우선",
+            "본문 문장 단위 동시매칭",
+            "제목 전용 후보 감점",
         ],
         "query_suggestions": query_suggestions(question, hits, coverage_ratio, official_count, stale_count),
         "quality_notes": search_quality_notes(page_hits, official_count, stale_count, coverage_ratio, scorecard),
@@ -2248,6 +2351,43 @@ def match_scope_distribution(hits: list[SearchHit], keywords: list[str]) -> dict
         else:
             counts["semantic"] += 1
     return counts
+
+
+def match_scope_coverage(hits: list[SearchHit], keywords: list[str]) -> dict[str, object]:
+    title_terms = set()
+    body_terms = set()
+    sentence_terms = set()
+    for hit in hits:
+        title = compact_text(hit.title)
+        body = compact_text(hit.text)
+        for keyword in keywords:
+            if term_in_text(keyword, title):
+                title_terms.add(keyword)
+            if term_in_text(keyword, body):
+                body_terms.add(keyword)
+        for sentence in sentence_units(hit.text)[:10]:
+            matched = [keyword for keyword in keywords if term_in_text(keyword, sentence)]
+            if len(matched) >= 2:
+                sentence_terms.update(matched)
+    total = max(len(keywords), 1)
+    return {
+        "title_ratio": round(len(title_terms) / total, 2) if keywords else 0.0,
+        "body_ratio": round(len(body_terms) / total, 2) if keywords else 0.0,
+        "sentence_ratio": round(len(sentence_terms) / total, 2) if keywords else 0.0,
+        "title_terms": sorted(title_terms)[:8],
+        "body_terms": sorted(body_terms)[:8],
+        "sentence_terms": sorted(sentence_terms)[:8],
+    }
+
+
+def query_context_gaps(page_hits: list[SearchHit], profile: QueryContext) -> dict[str, list[str]]:
+    haystack = " ".join(f"{compact_text(hit.title)} {compact_text(hit.text)}" for hit in page_hits[:8])
+    return {
+        "subjects": [term for term in profile.subjects[:8] if not term_in_text(term, haystack)],
+        "constraints": [term for term in profile.constraints[:6] if not term_in_text(term, haystack)],
+        "temporal": [term for term in profile.temporal[:4] if not term_in_text(term, haystack)],
+        "polarity": [term for term in profile.polarity[:4] if not term_in_text(term, haystack)],
+    }
 
 
 def search_quality_issue_code(

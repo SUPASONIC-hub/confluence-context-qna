@@ -824,11 +824,18 @@ function renderSearchMeta(meta) {
     .join(" · ");
   const scorecard = meta.scorecard || {};
   const matchScopes = meta.match_scope_distribution || {};
+  const scopeCoverage = meta.match_scope_coverage || {};
+  const contextGaps = meta.context_gaps || {};
   const matchScopeLabel = [
     `제목+본문 ${Number(matchScopes.title_body || 0)}`,
     `본문 ${Number(matchScopes.body || 0)}`,
     `제목 ${Number(matchScopes.title || 0)}`,
     `문맥 ${Number(matchScopes.semantic || 0)}`,
+  ].join(" · ");
+  const scopeCoverageLabel = [
+    `본문 ${Math.round(Number(scopeCoverage.body_ratio || 0) * 100)}%`,
+    `문장 ${Math.round(Number(scopeCoverage.sentence_ratio || 0) * 100)}%`,
+    `제목 ${Math.round(Number(scopeCoverage.title_ratio || 0) * 100)}%`,
   ].join(" · ");
   const queryContext = meta.query_context || {};
   const contextCoverageLabel = `${Math.round(Number(meta.context_coverage || 0) * 100)}%`;
@@ -860,6 +867,14 @@ function renderSearchMeta(meta) {
     .slice(0, 4)
     .map((step) => `<li>${escapeText(step)}</li>`)
     .join("");
+  const contextGapItems = [
+    ["대상", contextGaps.subjects || []],
+    ["조건", contextGaps.constraints || []],
+    ["기간", contextGaps.temporal || []],
+    ["예외", contextGaps.polarity || []],
+  ].filter(([, values]) => values.length)
+    .map(([label, values]) => `<span><b>${escapeText(label)}</b>${escapeText(values.slice(0, 5).join(", "))}</span>`)
+    .join("");
   const actions = recommendedSearchActions(meta);
   searchMetaPanel.innerHTML = `
     <div><strong>${escapeText(meta.confidence || "-")}</strong><span>신뢰도</span></div>
@@ -878,9 +893,13 @@ function renderSearchMeta(meta) {
     <div class="search-meta-wide"><strong>${docTypes}</strong><span>문서 유형</span></div>
     <div class="search-meta-wide"><strong>${escapeText(qualitySummary)}</strong><span>품질 분포</span></div>
     <div class="search-meta-wide"><strong>${escapeText(matchScopeLabel)}</strong><span>매칭 범위</span></div>
+    <div class="search-meta-wide"><strong>${escapeText(scopeCoverageLabel)}</strong><span>핵심어 위치 커버리지</span></div>
     <div><strong>${escapeText(`${Math.round(Number(queryContext.completeness || 0) * 100)}%`)}</strong><span>질문 문맥성</span></div>
     <div><strong>${escapeText(formatDate(meta.latest_updated))}</strong><span>최신 근거</span></div>
     <div class="search-context-profile">${contextProfileItems}</div>
+    <div class="search-context-profile search-context-gaps">
+      ${contextGapItems || "<span><b>누락</b>문맥 누락 없음</span>"}
+    </div>
     <div class="search-meta-keywords">${keywords || "<span>-</span>"}</div>
     <div class="search-meta-keywords search-missing-keywords">${missingKeywords || "<span>누락 핵심어 없음</span>"}</div>
     <div class="search-scorecard">${scorecardItems}</div>
