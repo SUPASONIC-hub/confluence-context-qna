@@ -37,6 +37,9 @@ const rerunQuestionButton = document.querySelector("#rerunQuestionButton");
 const usefulFeedbackButton = document.querySelector("#usefulFeedbackButton");
 const partialFeedbackButton = document.querySelector("#partialFeedbackButton");
 const badFeedbackButton = document.querySelector("#badFeedbackButton");
+const feedbackPanel = document.querySelector("#feedbackPanel");
+const feedbackNoteInput = document.querySelector("#feedbackNoteInput");
+const saveFeedbackNoteButton = document.querySelector("#saveFeedbackNoteButton");
 const opsStatus = document.querySelector("#opsStatus");
 const ingestProgressBar = document.querySelector("#ingestProgressBar");
 const ingestProgressDetail = document.querySelector("#ingestProgressDetail");
@@ -54,6 +57,7 @@ let currentHits = [];
 let currentQuestion = "";
 let currentAnswer = "";
 let currentFeedback = "";
+let currentFeedbackNote = "";
 let activeSourceType = "전체";
 let activeSourceSort = "score";
 let activeSourceQuality = "전체";
@@ -145,6 +149,8 @@ async function saveLocalHistoryPayload(payload) {
     hit_count: payload.hit_count || 0,
     answer_mode: payload.answer_mode || "",
     search_meta: payload.search_meta || {},
+    feedback: payload.feedback || "",
+    feedback_note: payload.feedback_note || "",
     created_at: payload.created_at || new Date().toISOString(),
   };
   await clientDbSet(key, item);
@@ -163,6 +169,8 @@ async function loadLocalHistoryItems() {
         local: true,
         question: item.question,
         hit_count: item.hit_count,
+        feedback: item.feedback || "",
+        feedback_note: item.feedback_note || "",
         created_at: item.created_at,
       });
     }
@@ -474,7 +482,8 @@ function renderRankingEval(payload) {
     .slice(0, 2)
     .map((item) => {
       const topTitle = item.top?.title ? ` top ${item.top.title}` : " top 없음";
-      return `${item.id} rank ${item.rank || "-"}${item.avoided_top ? " · bad 1위" : ""} ·${topTitle}`;
+      const note = item.feedback_note ? ` · ${item.feedback_note}` : "";
+      return `${item.id} rank ${item.rank || "-"}${item.avoided_top ? " · bad 1위" : ""}${note} ·${topTitle}`;
     })
     .join(" / ");
   renderOpsStatus(
@@ -487,7 +496,7 @@ function renderRankingEval(payload) {
     .slice(0, 4)
     .map((item) => `
       <button type="button" data-eval-question="${escapeText(item.question || "")}">
-        ${escapeText(item.question || item.id || "실패 케이스")}
+        ${escapeText(item.feedback_note || item.question || item.id || "실패 케이스")}
       </button>
     `)
     .join("");
@@ -516,7 +525,7 @@ function renderHistory(items = allHistoryItems) {
   historyList.innerHTML = visibleItems.map((item) => `
     <button class="history-item ${item.id === activeHistoryId ? "active" : ""}" data-id="${item.id}" type="button">
       <strong>${escapeText(item.question)}</strong>
-      <span>${formatDate(item.created_at)} · 근거 ${item.hit_count}개${item.local ? " · 브라우저" : ""}</span>
+      <span>${formatDate(item.created_at)} · 근거 ${item.hit_count}개${item.local ? " · 브라우저" : ""}${item.feedback ? ` · ${feedbackLabel(item.feedback)}` : ""}${item.feedback_note ? " · 메모" : ""}</span>
     </button>
   `).join("");
 }
@@ -841,6 +850,7 @@ function renderResult(payload) {
   currentAnswer = payload.answer || "";
   currentHits = payload.hits || [];
   currentFeedback = payload.feedback || "";
+  currentFeedbackNote = payload.feedback_note || "";
   activeSourceType = "전체";
   activeSourceQuality = "전체";
   activeSourceKeyword = "";
@@ -1270,9 +1280,19 @@ function renderFeedbackButtons() {
     badFeedbackButton.disabled = disabled;
     badFeedbackButton.classList.toggle("active", currentFeedback === "bad");
   }
+  if (feedbackPanel) {
+    feedbackPanel.classList.toggle("feedback-panel-active", Boolean(currentFeedback));
+  }
+  if (feedbackNoteInput) {
+    feedbackNoteInput.disabled = disabled || !currentFeedback;
+    feedbackNoteInput.value = currentFeedbackNote || "";
+  }
+  if (saveFeedbackNoteButton) {
+    saveFeedbackNoteButton.disabled = disabled || !currentFeedback;
+  }
 }
 
-async function submitFeedback(feedback) {
+async function submitFeedback(feedback, note = currentFeedbackNote) {
   if (!activeHistoryId || String(activeHistoryId).startsWith("local-history-")) {
     renderOpsStatus("브라우저 히스토리는 서버 피드백 저장을 지원하지 않습니다.");
     return;
@@ -1281,12 +1301,13 @@ async function submitFeedback(feedback) {
     const payload = await fetchJson(`/api/history/${activeHistoryId}/feedback`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ feedback }),
+      body: JSON.stringify({ feedback, note }),
     });
     currentFeedback = payload.feedback || "";
+    currentFeedbackNote = payload.feedback_note || "";
     renderFeedbackButtons();
-    renderOpsStatus(`검색 피드백 저장됨 · ${feedbackLabel(currentFeedback)}`);
-    await loadStats().catch(() => {});
+    renderOpsStatus(`검색 피드백 저장됨 · ${feedbackLabel(currentFeedback)}${currentFeedbackNote ? " · 메모 포함" : ""}`);
+    await Promise.allSettled([loadStats(), loadHistory()]);
   } catch (error) {
     renderOpsStatus(`피드백 저장 실패 · ${error.message}`);
   }
@@ -1306,6 +1327,23 @@ if (partialFeedbackButton) {
 
 if (badFeedbackButton) {
   badFeedbackButton.addEventListener("click", () => submitFeedback("bad"));
+}
+
+if (saveFeedbackNoteButton && feedbackNoteInput) {
+  saveFeedbackNoteButton.addEventListener("click", () => {
+    if (!currentFeedback) {
+      renderOpsStatus("먼저 피드백 유형을 선택하세요.");
+      return;
+    }
+    currentFeedbackNote = feedbackNoteInput.value.trim();
+    submitFeedback(currentFeedback, currentFeedbackNote);
+  });
+  feedbackNoteInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      saveFeedbackNoteButton.click();
+    }
+  });
 }
 
 function selectedSearchMode() {

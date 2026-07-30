@@ -2745,7 +2745,7 @@ def ranking_eval_cases_from_history(conn: sqlite3.Connection, limit: int) -> lis
     try:
         rows = conn.execute(
             """
-            SELECT id, question, hits_json, feedback, created_at
+            SELECT id, question, hits_json, feedback, feedback_note, created_at
             FROM query_history
             WHERE feedback IN ('useful', 'partial', 'bad')
             ORDER BY id DESC
@@ -2776,6 +2776,7 @@ def ranking_eval_cases_from_history(conn: sqlite3.Connection, limit: int) -> lis
             "expected_page_ids": page_ids[:3] if feedback in {"useful", "partial"} else [],
             "avoid_page_ids": page_ids[:2] if feedback == "bad" else [],
             "feedback": feedback,
+            "feedback_note": row["feedback_note"],
             "created_at": row["created_at"],
         }
         cases.append(case)
@@ -2903,6 +2904,7 @@ def evaluate_ranking_case(
         "id": case["id"],
         "source": case.get("source", ""),
         "question": case["question"],
+        "feedback_note": case.get("feedback_note", ""),
         "expected_page_ids": expected,
         "avoid_page_ids": avoid,
         "rank": rank,

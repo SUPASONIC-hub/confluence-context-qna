@@ -102,6 +102,10 @@
                 <button id="rerunQuestionButton" type="button" disabled>다시 질문</button>
               </div>
             </div>
+            <div id="feedbackPanel" class="feedback-panel">
+              <input id="feedbackNoteInput" type="text" placeholder="기대 문서, 누락 키워드, 틀린 이유" autocomplete="off" disabled />
+              <button id="saveFeedbackNoteButton" type="button" disabled>메모 저장</button>
+            </div>
             <div id="answerToc" class="answer-toc"></div>
             <div id="searchMetaPanel" class="search-meta-panel"></div>
             <div id="answerOutput" class="answer-output">왼쪽 히스토리를 선택하거나 새 질문을 입력하세요.</div>
@@ -137,6 +141,6 @@
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js', v='20260730-3') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260730-4') }}"></script>
   </body>
 </html>

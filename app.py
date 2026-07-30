@@ -613,7 +613,7 @@ def history():
     try:
         rows = conn.execute(
             """
-            SELECT id, question, hit_count, created_at
+            SELECT id, question, hit_count, feedback, feedback_note, created_at
             FROM query_history
             ORDER BY id DESC
             LIMIT 100
@@ -625,6 +625,8 @@ def history():
                     "id": row["id"],
                     "question": row["question"],
                     "hit_count": row["hit_count"],
+                    "feedback": row["feedback"],
+                    "feedback_note": row["feedback_note"],
                     "created_at": row["created_at"],
                 }
                 for row in rows
