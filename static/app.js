@@ -388,6 +388,7 @@ function renderStats(payload) {
     <div class="${searchHealth.index_health === "ready" ? "" : "stat-warning"}"><strong>${escapeText(indexHealthLabel(searchHealth.index_health))}</strong><span>인덱스</span></div>
     <div><strong>${escapeText(String(searchHealth.chunks_per_page ?? 0))}</strong><span>chunk/page</span></div>
     <div><strong>${escapeText(String(searchHealth.ask_cache_entries ?? 0))}</strong><span>검색캐시</span></div>
+    <div class="${searchHealth.live_search_enabled ? "" : "stat-warning"}"><strong>${searchHealth.live_search_enabled ? "ON" : "OFF"}</strong><span>Live CQL</span></div>
     <div><strong>${Number(feedback.useful || 0)}/${Number(feedback.bad || 0)}</strong><span>피드백</span></div>
     <div><strong>${escapeText(String(ingestSafety.fetch_limit ?? 20))}</strong><span>수집 fetch</span></div>
     <div><strong>${escapeText(String(ingestSafety.memory_soft_limit_mb ?? 360))}</strong><span>메모리MB</span></div>
@@ -469,6 +470,7 @@ function renderDiagnostics(payload) {
     `${errorPrefix}점검 ${payload.status} · DB ${payload.database} · 문서 ${counts.pages ?? 0} · chunk ${counts.chunks ?? 0} · ` +
     `${configLabel} · ${persistence}${dbHost}${dbUrlHint} · 인덱스 ${indexHealthLabel(searchHealth.index_health)} · ` +
     `chunk/page ${searchHealth.chunks_per_page ?? 0} · 공식공간 ${searchHealth.official_spaces_configured ? "설정" : "미설정"} · ` +
+    `Live CQL ${searchHealth.live_search_enabled ? "ON" : "OFF"} · ` +
     `스페이스 ${progress.completed_spaces ?? 0}/${progress.total_spaces ?? 0} · ` +
     `수집 fetch ${ingestSafety.fetch_limit ?? "-"} · 메모리 ${progress.memory?.rss_mb ?? "-"}MB/${ingestSafety.memory_soft_limit_mb ?? "-"}MB`
   );
@@ -536,7 +538,7 @@ function renderSourceFilters(hits) {
     acc[type] = (acc[type] || 0) + 1;
     return acc;
   }, { 전체: hits.length });
-  const types = ["전체", "정책", "매뉴얼", "회의록", "결정사항", "기획서", "이슈", "일반문서"]
+  const types = ["전체", "정책", "매뉴얼", "회의록", "결정사항", "기획서", "이슈", "첨부파일", "Confluence 페이지", "Confluence 블로그", "댓글", "일반문서"]
     .filter((type) => counts[type]);
   const officialCount = hits.filter((hit) => ["정책", "매뉴얼", "결정사항"].includes(hit.document_type || "")).length;
   const staleCount = hits.filter((hit) => Number(hit.freshness_score ?? 0) < 0).length;
@@ -995,6 +997,7 @@ function renderSearchMeta(meta) {
     <div><strong>${escapeText(String(meta.official_count ?? 0))}</strong><span>공식 근거</span></div>
     <div><strong>${escapeText(String(meta.stale_count ?? 0))}</strong><span>오래된 후보</span></div>
     <div><strong>${escapeText(String(meta.derived_query_count ?? 1))}</strong><span>검색 변형</span></div>
+    <div><strong>${escapeText(String(meta.live_result_count ?? 0))}</strong><span>Live 후보</span></div>
     <div><strong>${escapeText(modeLabel(meta.recommended_mode || "balanced"))}</strong><span>추천 모드</span></div>
     <div class="${meta.slow_query ? "search-meta-warning" : ""}"><strong>${escapeText(elapsedLabel)}</strong><span>처리 시간</span></div>
     <div><strong>${escapeText(cacheLabel)}</strong><span>검색 캐시</span></div>

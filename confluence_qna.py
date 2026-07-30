@@ -33,6 +33,7 @@ DEFAULT_INGEST_FETCH_LIMIT = 20
 DEFAULT_INGEST_TIME_BUDGET_SECONDS = 12
 DEFAULT_INGEST_MEMORY_SOFT_LIMIT_MB = 360
 DEFAULT_INGEST_MAX_PAGE_TEXT_CHARS = 450_000
+DEFAULT_LIVE_SEARCH_LIMIT = 6
 POSTGRES_SCHEMA_LOCK = threading.Lock()
 POSTGRES_SCHEMA_READY = False
 
@@ -412,20 +413,136 @@ def backfill_page_chunks(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def confluence_get(config: Config, path: str, params: dict[str, object]) -> dict:
+def confluence_get(config: Config, path: str, params: dict[str, object], timeout: float = 30) -> dict:
     url = f"{config.base_url}{path}"
     response = requests.get(
         url,
         params=params,
         auth=(config.email, config.api_token),
         headers={"Accept": "application/json"},
-        timeout=30,
+        timeout=timeout,
     )
     try:
         response.raise_for_status()
     except HTTPError as error:
         raise RuntimeError(explain_http_error(error)) from error
     return response.json()
+
+
+def confluence_live_search_enabled() -> bool:
+    return os.getenv("CONFLUENCE_LIVE_SEARCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def cql_quote(value: str) -> str:
+    return '"' + str(value or "").replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def confluence_content_type_label(item: dict) -> str:
+    content_type = str(item.get("type") or "")
+    return {
+        "page": "Confluence 페이지",
+        "blogpost": "Confluence 블로그",
+        "attachment": "첨부파일",
+        "comment": "댓글",
+    }.get(content_type, content_type or "Confluence")
+
+
+def confluence_live_search(config: Config, query: str, limit: int | None = None) -> list[SearchHit]:
+    if not confluence_live_search_enabled() or not config.base_url or not config.email or not config.api_token:
+        return []
+    limit = max(0, min(int(limit if limit is not None else parse_int_env("CONFLUENCE_LIVE_SEARCH_LIMIT", DEFAULT_LIVE_SEARCH_LIMIT)), 20))
+    if limit <= 0:
+        return []
+    terms = [term for term in essential_terms(query)[:6] if len(term) >= 2]
+    if not terms:
+        terms = question_tokens(query)[:5]
+    if not terms:
+        return []
+    text_query = " ".join(terms[:6])
+    type_clause = os.getenv("CONFLUENCE_LIVE_SEARCH_TYPES", "page,blogpost,attachment")
+    content_types = [item.strip() for item in type_clause.split(",") if item.strip()]
+    type_filter = f"type in ({','.join(content_types)})" if content_types else ""
+    space_filter = f"space = {cql_quote(config.space_key)}" if config.space_key else ""
+    clauses = [f'text ~ {cql_quote(text_query)}']
+    if type_filter:
+        clauses.append(type_filter)
+    if space_filter:
+        clauses.append(space_filter)
+    cql = " AND ".join(clauses) + " ORDER BY lastmodified DESC"
+    try:
+        data = confluence_get(
+            config,
+            "/rest/api/content/search",
+            {
+                "cql": cql,
+                "limit": limit,
+                "expand": "body.storage,version,history,space,metadata",
+            },
+            timeout=max(2.0, min(parse_float_env("CONFLUENCE_LIVE_SEARCH_TIMEOUT_SECONDS", 6.0), 12.0)),
+        )
+    except Exception:
+        return []
+    hits = []
+    for item in data.get("results", []):
+        hit = confluence_search_item_to_hit(config, item, query)
+        if hit:
+            hits.append(hit)
+    return hits
+
+
+def confluence_search_item_to_hit(config: Config, item: dict, query: str) -> SearchHit | None:
+    content_id = str(item.get("id") or "").strip()
+    if not content_id:
+        return None
+    title = str(item.get("title") or "").strip() or "(제목 없음)"
+    body = ((item.get("body") or {}).get("storage") or {}).get("value", "")
+    text = clean_html(body) if body else ""
+    content_type = confluence_content_type_label(item)
+    version = item.get("version") or {}
+    history = item.get("history") or {}
+    space = (item.get("space") or {}).get("key", "")
+    url = page_url(config, item)
+    created_at = str(history.get("createdDate") or "")
+    last_updated = str(version.get("when") or created_at)
+    author = ((version.get("by") or history.get("createdBy") or {}) or {}).get("displayName", "Confluence")
+    if not text:
+        text = " | ".join(part for part in [title, content_type, space, url] if part)
+    matched = [
+        term
+        for term in (essential_terms(query)[:10] or extract_terms(query)[:10])
+        if term_in_text(term, title) or term_in_text(term, text)
+    ]
+    if not matched:
+        matched = question_tokens(query)[:4]
+    score = 18.0 + len(matched) * 7.0 + exactness_bonus_like(title, text, query) + recency_boost(last_updated)
+    if item.get("type") == "attachment":
+        score += 3.0
+    return SearchHit(
+        page_id=f"live:{content_id}",
+        chunk_index=0,
+        title=f"{title} · {content_type}",
+        text=text,
+        created_at=created_at,
+        last_updated=last_updated,
+        author=author,
+        space=space or "Confluence",
+        url=url,
+        score=score,
+        document_type=content_type,
+        matched_terms=tuple(ordered_unique(matched)[:12]),
+    )
+
+
+def exactness_bonus_like(title: str, text: str, query: str) -> float:
+    title_text = compact_text(title)
+    body_text = compact_text(text)
+    score = 0.0
+    for phrase in phrase_candidates(query)[:5]:
+        if phrase in title_text:
+            score += 10.0
+        elif phrase in body_text:
+            score += 4.0
+    return score
 
 
 def clean_html(html: str) -> str:
@@ -2868,7 +2985,7 @@ def related_eval_page_ids_for_terms(conn: sqlite3.Connection, terms: list[str], 
         if sum(1 for term in terms if term_in_text(term, row["title"])) >= threshold
     ]
     page_ids = ordered_unique([fallback_page_id, *related])
-    return page_ids[:8]
+    return page_ids[:20]
 
 
 def build_ranking_eval_cases(conn: sqlite3.Connection, limit: int = 24) -> list[dict[str, object]]:
@@ -2979,6 +3096,211 @@ def ranking_eval_notes(metrics: dict[str, object]) -> list[str]:
     if not notes:
         notes.append("현재 평가셋 기준으로 치명적인 랭킹 회귀 신호는 없습니다.")
     return notes
+
+
+def iter_jsonl(path: Path) -> Iterable[dict[str, object]]:
+    with path.open("r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+
+def find_first_existing(paths: Iterable[Path]) -> Path | None:
+    for path in paths:
+        if path.exists():
+            return path
+    return None
+
+
+def load_public_ir_cases(dataset_path: str, limit: int = 50) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
+    path = Path(dataset_path)
+    limit = max(1, min(int(limit), 200))
+    if path.is_file() and path.suffix.lower() == ".jsonl":
+        return load_nq_like_cases(path, limit)
+    if not path.is_dir():
+        raise RuntimeError(f"공개 평가 데이터 경로를 찾을 수 없습니다: {dataset_path}")
+    corpus_path = find_first_existing([path / "corpus.jsonl", path / "collection.jsonl"])
+    queries_path = find_first_existing([path / "queries.jsonl", path / "queries.dev.tsv", path / "queries.tsv"])
+    qrels_path = find_first_existing([
+        path / "qrels" / "test.tsv",
+        path / "qrels" / "dev.tsv",
+        path / "qrels" / "train.tsv",
+        path / "qrels.tsv",
+        path / "qrels.dev.tsv",
+    ])
+    collection_tsv = find_first_existing([path / "collection.tsv", path / "corpus.tsv"])
+    if corpus_path and queries_path and qrels_path:
+        return load_beir_like_cases(corpus_path, queries_path, qrels_path, limit)
+    if collection_tsv and queries_path and qrels_path:
+        return load_msmarco_like_cases(collection_tsv, queries_path, qrels_path, limit)
+    raise RuntimeError("지원 형식: BEIR(corpus.jsonl/queries/qrels), MS MARCO(collection.tsv/queries/qrels), NQ-like jsonl")
+
+
+def load_queries_file(path: Path) -> dict[str, str]:
+    if path.suffix.lower() == ".jsonl":
+        return {
+            str(item.get("_id") or item.get("id") or item.get("query_id")): str(item.get("text") or item.get("query") or item.get("question") or "")
+            for item in iter_jsonl(path)
+        }
+    queries = {}
+    with path.open("r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) >= 2:
+                queries[parts[0]] = parts[1]
+    return queries
+
+
+def load_qrels_file(path: Path, limit: int) -> dict[str, list[str]]:
+    qrels: dict[str, list[str]] = {}
+    with path.open("r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            if line.lower().startswith("query-id") or line.lower().startswith("qid"):
+                continue
+            parts = line.strip().split()
+            if len(parts) < 3:
+                continue
+            query_id, doc_id = parts[0], parts[-2] if len(parts) >= 4 else parts[1]
+            try:
+                score = float(parts[-1])
+            except ValueError:
+                score = 1.0
+            if score <= 0:
+                continue
+            qrels.setdefault(query_id, [])
+            if doc_id not in qrels[query_id]:
+                qrels[query_id].append(doc_id)
+            if len(qrels) >= limit and all(qrels.values()):
+                break
+    return qrels
+
+
+def load_beir_like_cases(corpus_path: Path, queries_path: Path, qrels_path: Path, limit: int) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
+    queries = load_queries_file(queries_path)
+    qrels = load_qrels_file(qrels_path, limit)
+    needed_doc_ids = {doc_id for doc_ids in qrels.values() for doc_id in doc_ids}
+    docs = []
+    for item in iter_jsonl(corpus_path):
+        doc_id = str(item.get("_id") or item.get("id") or "")
+        if doc_id in needed_doc_ids or len(docs) < max(limit * 12, 80):
+            docs.append({
+                "id": doc_id,
+                "title": str(item.get("title") or ""),
+                "text": str(item.get("text") or item.get("contents") or ""),
+            })
+        if needed_doc_ids.issubset({doc["id"] for doc in docs}) and len(docs) >= max(limit * 8, 60):
+            break
+    cases = [
+        {"id": f"public-{query_id}", "question": query, "expected_doc_ids": qrels.get(query_id, [])}
+        for query_id, query in queries.items()
+        if query_id in qrels and query
+    ][:limit]
+    return cases, docs
+
+
+def load_msmarco_like_cases(collection_path: Path, queries_path: Path, qrels_path: Path, limit: int) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
+    queries = load_queries_file(queries_path)
+    qrels = load_qrels_file(qrels_path, limit)
+    needed_doc_ids = {doc_id for doc_ids in qrels.values() for doc_id in doc_ids}
+    docs = []
+    with collection_path.open("r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            parts = line.rstrip("\n").split("\t", 1)
+            if len(parts) < 2:
+                continue
+            doc_id, text = parts
+            if doc_id in needed_doc_ids or len(docs) < max(limit * 12, 80):
+                docs.append({"id": doc_id, "title": "", "text": text})
+            if needed_doc_ids.issubset({doc["id"] for doc in docs}) and len(docs) >= max(limit * 8, 60):
+                break
+    cases = [
+        {"id": f"public-{query_id}", "question": query, "expected_doc_ids": qrels.get(query_id, [])}
+        for query_id, query in queries.items()
+        if query_id in qrels and query
+    ][:limit]
+    return cases, docs
+
+
+def load_nq_like_cases(path: Path, limit: int) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
+    cases = []
+    docs = []
+    for index, item in enumerate(iter_jsonl(path)):
+        question = str(item.get("question") or item.get("query") or "")
+        positives = item.get("positive_ctxs") or item.get("positive_contexts") or []
+        if not question or not isinstance(positives, list) or not positives:
+            continue
+        expected = []
+        for pos_index, ctx in enumerate(positives[:3]):
+            doc_id = str(ctx.get("id") or ctx.get("docid") or f"nq-{index}-{pos_index}")
+            docs.append({"id": doc_id, "title": str(ctx.get("title") or ""), "text": str(ctx.get("text") or ctx.get("passage") or "")})
+            expected.append(doc_id)
+        cases.append({"id": f"public-nq-{index}", "question": question, "expected_doc_ids": expected})
+        if len(cases) >= limit:
+            break
+    return cases, docs
+
+
+def public_doc_score(question: str, doc: dict[str, str]) -> tuple[float, list[str]]:
+    terms = extract_terms(question)
+    essentials = essential_terms(question)
+    bm25_score, matched = bm25_lite_score(doc.get("title", ""), doc.get("text", ""), terms, essentials)
+    profile = context_profile(question)
+    context_bonus, context_signals, diagnostics = context_match_score(doc.get("title", ""), doc.get("text", ""), profile)
+    title_coverage = sum(1 for term in essentials[:8] if term_in_text(term, doc.get("title", ""))) / max(len(essentials[:8]), 1) if essentials else 0.0
+    score = bm25_score * 3.0 + context_bonus + float(diagnostics.get("context_coverage", 0.0)) * 12.0 + title_coverage * 10.0
+    score += exactness_bonus_like(doc.get("title", ""), doc.get("text", ""), question)
+    return score, ordered_unique([*matched, *context_signals])[:10]
+
+
+def public_ir_eval_report(dataset_path: str, limit: int = 50) -> dict[str, object]:
+    cases, docs = load_public_ir_cases(dataset_path, limit)
+    results = []
+    for case in cases:
+        ranked = sorted(
+            (
+                {
+                    "doc_id": doc["id"],
+                    "title": doc.get("title", ""),
+                    "score": public_doc_score(str(case["question"]), doc)[0],
+                }
+                for doc in docs
+            ),
+            key=lambda item: item["score"],
+            reverse=True,
+        )[:10]
+        expected = [str(doc_id) for doc_id in case.get("expected_doc_ids", [])]
+        rank = next((index for index, item in enumerate(ranked, start=1) if item["doc_id"] in expected), None)
+        results.append({
+            "id": case["id"],
+            "question": case["question"],
+            "rank": rank,
+            "hit_at_1": bool(rank and rank <= 1),
+            "hit_at_3": bool(rank and rank <= 3),
+            "hit_at_5": bool(rank and rank <= 5),
+            "mrr": round(1 / rank, 3) if rank else 0.0,
+            "top": ranked[0] if ranked else None,
+        })
+    avg = lambda values: round(sum(values) / max(len(values), 1), 3)
+    metrics = {
+        "case_count": len(results),
+        "doc_count": len(docs),
+        "hit_at_1": avg([1 if result["hit_at_1"] else 0 for result in results]),
+        "hit_at_3": avg([1 if result["hit_at_3"] else 0 for result in results]),
+        "hit_at_5": avg([1 if result["hit_at_5"] else 0 for result in results]),
+        "mrr": avg([float(result["mrr"]) for result in results]),
+    }
+    return {
+        "dataset_path": dataset_path,
+        "metrics": metrics,
+        "failed_cases": [result for result in results if not result["hit_at_5"]][:10],
+        "cases": results,
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
 
 
 def search_scorecard(
@@ -3290,6 +3612,22 @@ def eval_ranking(args: argparse.Namespace) -> None:
             )
 
 
+def eval_public(args: argparse.Namespace) -> None:
+    report_payload = public_ir_eval_report(args.dataset, limit=args.limit)
+    if args.json:
+        print(json.dumps(report_payload, ensure_ascii=False, indent=2))
+        return
+    metrics = report_payload["metrics"]
+    print("# 공개 IR 랭킹 평가")
+    print(f"dataset={report_payload['dataset_path']} cases={metrics['case_count']} docs={metrics['doc_count']}")
+    print("hit@1={hit_at_1} hit@3={hit_at_3} hit@5={hit_at_5} mrr={mrr}".format(**metrics))
+    if report_payload["failed_cases"]:
+        print("\n## 실패/주의 케이스")
+        for case in report_payload["failed_cases"][:8]:
+            top = case.get("top") or {}
+            print(f"- {case['id']} rank={case['rank']} q={case['question']} top={top.get('title') or top.get('doc_id', '-')}")
+
+
 def main(argv: list[str]) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -3318,6 +3656,12 @@ def main(argv: list[str]) -> int:
     eval_parser.add_argument("--time-budget", type=float, default=None, help="케이스별 검색 시간 예산 초")
     eval_parser.add_argument("--json", action="store_true", help="JSON으로 출력")
     eval_parser.set_defaults(func=eval_ranking)
+
+    public_eval_parser = subparsers.add_parser("eval-public", help="BEIR/MS MARCO/NQ-like 공개 IR 데이터셋으로 랭킹 평가를 실행합니다.")
+    public_eval_parser.add_argument("--dataset", required=True, help="데이터셋 디렉터리 또는 NQ-like jsonl 파일")
+    public_eval_parser.add_argument("--limit", type=int, default=50, help="평가 케이스 수")
+    public_eval_parser.add_argument("--json", action="store_true", help="JSON으로 출력")
+    public_eval_parser.set_defaults(func=eval_public)
 
     args = parser.parse_args(argv)
     args.func(args)

@@ -34,6 +34,10 @@ SEARCH_MAX_CANDIDATES=96
 DB_STATEMENT_TIMEOUT_MS=5500
 SEARCH_SENTENCE_SCAN_LIMIT=8
 SEARCH_TEXT_SCAN_CHARS=3600
+CONFLUENCE_LIVE_SEARCH_ENABLED=1
+CONFLUENCE_LIVE_SEARCH_LIMIT=6
+CONFLUENCE_LIVE_SEARCH_TIMEOUT_SECONDS=6
+CONFLUENCE_LIVE_SEARCH_TYPES=page,blogpost,attachment
 EVAL_SEARCH_TIME_BUDGET_SECONDS=1.6
 RANKING_EVAL_LIMIT=12
 INGEST_FETCH_LIMIT=20
@@ -53,6 +57,7 @@ INGEST_MAX_PAGE_TEXT_CHARS=450000
 `DB_STATEMENT_TIMEOUT_MS`는 Postgres 단일 SQL의 제한 시간입니다. 기본값은 4500ms이며, 느린 검색/진단 쿼리가 gunicorn worker를 오래 붙잡지 않도록 합니다.
 `DB_SCHEMA_TIMEOUT_MS`는 배포 직후 최초 스키마 확인 작업의 제한 시간입니다. 기본값은 15000ms이며, 이후 요청에서는 스키마 확인을 반복하지 않습니다.
 `ASK_CACHE_TTL_SECONDS`는 같은 질문/검색 모드 재실행 시 서버 메모리 캐시를 유지하는 시간입니다. 반복 질문이나 502 후 재시도 비용을 줄입니다.
+`CONFLUENCE_LIVE_SEARCH_ENABLED`가 켜져 있으면 질문 시 로컬 DB 검색 결과에 Confluence CQL live 검색 후보를 추가합니다. 기본 타입은 `page,blogpost,attachment`이며, Confluence REST 검색이 반환하는 권한 내 결과만 포함됩니다. Jira, Google Drive, Figma, Google Sheets 같은 외부 앱 결과는 Confluence에 content/attachment/스마트링크 형태로 색인되고 API에 노출되는 범위까지만 후보화할 수 있습니다.
 `EVAL_SEARCH_TIME_BUDGET_SECONDS`와 `RANKING_EVAL_LIMIT`는 랭킹 평가 1건당 검색 시간 예산과 운영 패널 평가 케이스 수를 제한합니다. 운영 중에는 1-2초, 12건 이하를 권장합니다.
 `INGEST_FETCH_LIMIT`는 Confluence API에서 한 번에 가져오는 페이지 수입니다. Render 메모리가 빠듯하면 10-20을 권장합니다.
 `INGEST_BATCH_MAX_SIZE`는 브라우저나 외부 호출이 한 번에 요청할 수 있는 최대 수집 페이지 수입니다. 긴 요청으로 `/healthz`가 밀리지 않도록 40 이하를 권장합니다.
@@ -114,6 +119,16 @@ python .\confluence_qna.py eval-ranking --limit 24 --mode balanced
 평가셋은 피드백이 있는 질문 히스토리와 실제 Confluence 문서 제목/유형에서 생성한 자동 gold case를 함께 사용합니다. `hit@3`, `MRR`, `bad_top_rate`, 평균 검색 시간을 확인해 검색 변경 전후를 비교하세요. `--json`을 붙이면 CI나 외부 리포트에서 쓰기 쉬운 JSON으로 출력합니다.
 정확한 평가를 위해 실제 검색 결과에는 `유용`, `부분적`, `부정확` 피드백을 꾸준히 남기세요. 피드백 라벨이 적으면 자동 gold case 비중이 커져 제목 재현성은 검증할 수 있지만 실제 업무 판단 품질 평가는 제한됩니다.
 사용자 테스트를 할 때는 앱 URL만 공유하고 관리자 토큰은 공유하지 마세요. 일반 사용자는 질문과 피드백 저장만 수행하고, 수집/복원/진단/랭킹 평가는 운영자가 관리자 토큰으로 실행하는 흐름을 권장합니다. `부분적` 또는 `부정확` 피드백에는 기대 문서, 누락 키워드, 틀린 이유를 메모로 남기면 다음 평가셋 보정에 바로 사용할 수 있습니다.
+
+공개 IR 벤치마크 평가:
+
+```powershell
+python .\confluence_qna.py eval-public --dataset .\benchmarks\beir-fiqa --limit 50
+python .\confluence_qna.py eval-public --dataset .\benchmarks\msmarco --limit 50 --json
+python .\confluence_qna.py eval-public --dataset .\benchmarks\nq-dev.jsonl --limit 50
+```
+
+지원 형식은 BEIR 스타일 `corpus.jsonl`, `queries.jsonl` 또는 `queries.tsv`, `qrels/test.tsv`; MS MARCO 스타일 `collection.tsv`, `queries*.tsv`, `qrels*.tsv`; 그리고 `question`과 `positive_ctxs`를 가진 Natural Questions류 jsonl입니다. 공개 데이터 파일은 크기와 라이선스가 다양하므로 저장소에 커밋하지 말고 로컬/CI 캐시 경로에서 평가만 실행하세요.
 
 ## 5. Knowledge Management 인터페이스
 

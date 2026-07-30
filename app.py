@@ -13,6 +13,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_from_
 
 from confluence_qna import (
     connect_db,
+    confluence_live_search,
     generate_answer,
     ingest,
     ingest_batch,
@@ -102,6 +103,20 @@ def service_pressure_status() -> dict[str, object]:
     with INGEST_LOCK:
         ingest_running = bool(INGEST_STATE.get("running"))
     return {"memory": memory, "ingest_running": ingest_running}
+
+
+def merge_live_hits(local_hits, live_hits):
+    if not live_hits:
+        return list(local_hits)
+    seen = {(hit.url or "", hit.title or "") for hit in local_hits}
+    merged = list(local_hits)
+    for hit in live_hits:
+        key = (hit.url or "", hit.title or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(hit)
+    return sorted(merged, key=lambda hit: (hit.score, hit.last_updated), reverse=True)[:14]
 
 
 def ask_cache_key(question: str, search_mode: str) -> str:
@@ -314,6 +329,8 @@ def page_stats(conn: sqlite3.Connection) -> dict[str, object]:
             "index_health": index_health,
             "ask_cache_entries": len(ASK_CACHE),
             "ask_cache_ttl_seconds": ask_cache_ttl_seconds(),
+            "live_search_enabled": os.getenv("CONFLUENCE_LIVE_SEARCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"},
+            "live_search_limit": env_int("CONFLUENCE_LIVE_SEARCH_LIMIT", 6),
         },
         "ingest_safety": ingest_safety_config(),
         "database": "postgres" if uses_postgres else "sqlite",
@@ -698,9 +715,19 @@ def ask_api():
             meta["slow_query"] = False
         else:
             hits = merged_hits(conn, question, search_mode)
+            live_hits = []
+            try:
+                live_hits = confluence_live_search(load_config(), question)
+            except Exception:
+                logger.exception("Confluence live search failed")
+                live_hits = []
+            hits = merge_live_hits(hits, live_hits)
             answer, answer_mode = generate_answer(question, hits)
             serialized = serialize_hits(hits, question)
             meta = search_meta(question, hits, search_mode)
+            meta["live_result_count"] = len(live_hits)
+            if live_hits:
+                meta.setdefault("ranker_features", []).append("Confluence CQL live 후보")
             elapsed_ms = int((time.monotonic() - started) * 1000)
             meta["elapsed_ms"] = elapsed_ms
             meta["slow_query"] = elapsed_ms >= int(os.getenv("SLOW_SEARCH_MS", "6500"))
@@ -952,6 +979,8 @@ def admin_diagnostics():
                 "ranking_weights_configured": bool(
                     config.official_spaces or config.space_weights or config.document_type_weights
                 ),
+                "live_search_enabled": os.getenv("CONFLUENCE_LIVE_SEARCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"},
+                "live_search_limit": env_int("CONFLUENCE_LIVE_SEARCH_LIMIT", 6),
             },
             "ingest_safety": ingest_safety_config(),
             "config": {
