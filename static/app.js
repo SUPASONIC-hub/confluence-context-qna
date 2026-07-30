@@ -25,6 +25,7 @@ const saveTokenButton = document.querySelector("#saveTokenButton");
 const runBatchButton = document.querySelector("#runBatchButton");
 const resetBatchButton = document.querySelector("#resetBatchButton");
 const diagnosticsButton = document.querySelector("#diagnosticsButton");
+const rankingEvalButton = document.querySelector("#rankingEvalButton");
 const refreshStatsButton = document.querySelector("#refreshStats");
 const exportLink = document.querySelector("#exportLink");
 const jsonBackupButton = document.querySelector("#jsonBackupButton");
@@ -462,6 +463,23 @@ function renderDiagnostics(payload) {
     `수집 fetch ${ingestSafety.fetch_limit ?? "-"} · 메모리 ${progress.memory?.rss_mb ?? "-"}MB/${ingestSafety.memory_soft_limit_mb ?? "-"}MB`
   );
   renderIngestProgress(progress);
+}
+
+function renderRankingEval(payload) {
+  const metrics = payload.metrics || {};
+  const notes = (payload.notes || []).slice(0, 2).join(" · ");
+  const failed = (payload.failed_cases || [])
+    .slice(0, 2)
+    .map((item) => {
+      const topTitle = item.top?.title ? ` top ${item.top.title}` : " top 없음";
+      return `${item.id} rank ${item.rank || "-"}${item.avoided_top ? " · bad 1위" : ""} ·${topTitle}`;
+    })
+    .join(" / ");
+  renderOpsStatus(
+    `랭킹 평가 · cases ${metrics.case_count ?? 0} · hit@3 ${metrics.hit_at_3 ?? 0} · ` +
+    `MRR ${metrics.mrr ?? 0} · bad@1 ${metrics.bad_top_rate ?? 0} · avg ${metrics.avg_elapsed_ms ?? 0}ms` +
+    `${notes ? ` · ${notes}` : ""}${failed ? ` · 주의 ${failed}` : ""}`
+  );
 }
 
 function renderHistory(items = allHistoryItems) {
@@ -1553,6 +1571,20 @@ if (diagnosticsButton) {
       renderOpsStatus(error.message);
     } finally {
       diagnosticsButton.disabled = false;
+    }
+  });
+}
+
+if (rankingEvalButton) {
+  rankingEvalButton.addEventListener("click", async () => {
+    rankingEvalButton.disabled = true;
+    renderOpsStatus("랭킹 평가 실행 중");
+    try {
+      renderRankingEval(await fetchJson("/api/admin/ranking-eval", { headers: adminHeaders(), retryAttempts: 1 }));
+    } catch (error) {
+      renderOpsStatus(`랭킹 평가 실패 · ${error.message}`);
+    } finally {
+      rankingEvalButton.disabled = false;
     }
   });
 }

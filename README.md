@@ -34,6 +34,8 @@ SEARCH_MAX_CANDIDATES=96
 DB_STATEMENT_TIMEOUT_MS=5500
 SEARCH_SENTENCE_SCAN_LIMIT=8
 SEARCH_TEXT_SCAN_CHARS=3600
+EVAL_SEARCH_TIME_BUDGET_SECONDS=1.6
+RANKING_EVAL_LIMIT=12
 INGEST_FETCH_LIMIT=20
 INGEST_BATCH_MAX_SIZE=40
 INGEST_BATCH_TIME_BUDGET_SECONDS=12
@@ -51,6 +53,7 @@ INGEST_MAX_PAGE_TEXT_CHARS=450000
 `DB_STATEMENT_TIMEOUT_MS`는 Postgres 단일 SQL의 제한 시간입니다. 기본값은 4500ms이며, 느린 검색/진단 쿼리가 gunicorn worker를 오래 붙잡지 않도록 합니다.
 `DB_SCHEMA_TIMEOUT_MS`는 배포 직후 최초 스키마 확인 작업의 제한 시간입니다. 기본값은 15000ms이며, 이후 요청에서는 스키마 확인을 반복하지 않습니다.
 `ASK_CACHE_TTL_SECONDS`는 같은 질문/검색 모드 재실행 시 서버 메모리 캐시를 유지하는 시간입니다. 반복 질문이나 502 후 재시도 비용을 줄입니다.
+`EVAL_SEARCH_TIME_BUDGET_SECONDS`와 `RANKING_EVAL_LIMIT`는 랭킹 평가 1건당 검색 시간 예산과 운영 패널 평가 케이스 수를 제한합니다. 운영 중에는 1-2초, 12건 이하를 권장합니다.
 `INGEST_FETCH_LIMIT`는 Confluence API에서 한 번에 가져오는 페이지 수입니다. Render 메모리가 빠듯하면 10-20을 권장합니다.
 `INGEST_BATCH_MAX_SIZE`는 브라우저나 외부 호출이 한 번에 요청할 수 있는 최대 수집 페이지 수입니다. 긴 요청으로 `/healthz`가 밀리지 않도록 40 이하를 권장합니다.
 `INGEST_BATCH_TIME_BUDGET_SECONDS`와 `INGEST_MEMORY_SOFT_LIMIT_MB`에 닿으면 수집 API는 `paused`로 반환하고, 이미 저장한 페이지의 다음 위치부터 다음 배치에서 자동 재개합니다.
@@ -101,6 +104,14 @@ python .\confluence_qna.py ask "현재 환불 정책 프로세스가 정상인�
 ```
 
 검색된 근거, 최신 문서 후보, 히스토리 후보, 리스크 후보를 구조화해서 보여줍니다.
+
+랭킹 회귀 평가:
+
+```powershell
+python .\confluence_qna.py eval-ranking --limit 24 --mode balanced
+```
+
+평가셋은 피드백이 있는 질문 히스토리와 실제 Confluence 문서 제목/유형에서 생성한 자동 gold case를 함께 사용합니다. `hit@3`, `MRR`, `bad_top_rate`, 평균 검색 시간을 확인해 검색 변경 전후를 비교하세요. `--json`을 붙이면 CI나 외부 리포트에서 쓰기 쉬운 JSON으로 출력합니다.
 
 ## 5. Knowledge Management 인터페이스
 
@@ -167,6 +178,7 @@ https://YOUR-SERVICE.onrender.com/api/admin/diagnostics
 
 브라우저 운영 패널에서는 관리자 토큰 저장 후 `배치 수집`으로 이어서 수집하고, `처음부터 수집`으로 저장된 수집 진행 위치를 0부터 다시 계산합니다. 서버는 페이지 단위로 저장 지점을 커밋하고, 메모리/시간 예산에 닿으면 잠시 반환한 뒤 다음 배치에서 자동 재개합니다. 기존 문서는 삭제하지 않고 upsert로 최신 내용으로 갱신합니다.
 `관리자 토큰 필요`가 표시되면 Render의 `ADMIN_TOKEN`과 같은 값을 운영 패널에 저장한 뒤 배치 수집을 실행합니다.
+운영 패널의 `랭킹 평가`는 `/api/admin/ranking-eval`을 호출해 현재 corpus/히스토리 기준 검색 품질을 짧게 점검합니다. 평가 결과가 낮으면 실패 케이스 질문을 기준으로 동의어, 공식 스페이스 가중치, 문서 유형 가중치를 보정하세요.
 
 CSV 백업:
 

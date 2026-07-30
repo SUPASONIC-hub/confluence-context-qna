@@ -1763,11 +1763,22 @@ def hit_quality_score(hit: SearchHit, question: str) -> float:
     coverage = coverage_ratio_for_terms(keywords, hit.matched_terms)
     context_bonus, _, context_diagnostics = context_match_score(hit.title, hit.text, profile)
     context_coverage = float(context_diagnostics.get("context_coverage", 0.0))
+    title_coverage = sum(1 for term in keywords if term_in_text(term, hit.title)) / max(len(keywords), 1) if keywords else 0.0
     official = 1.0 if hit.document_type in {"정책", "매뉴얼", "결정사항"} else 0.0
     title_match = 1.0 if any(term in compact_text(hit.title) for term in keywords[:6]) else 0.0
     exact_phrase = 1.0 if any(phrase in compact_text(hit.title) for phrase in phrase_candidates(question)[:4]) else 0.0
     fresh = max(min(recency_boost(hit.last_updated), 2.0), -0.8)
-    return hit.score + coverage * 16.0 + context_coverage * 14.0 + min(context_bonus, 12.0) + official * 6.0 + title_match * 5.0 + exact_phrase * 5.0 + fresh
+    return (
+        hit.score
+        + coverage * 16.0
+        + context_coverage * 14.0
+        + title_coverage * 10.0
+        + min(context_bonus, 12.0)
+        + official * 6.0
+        + title_match * 5.0
+        + exact_phrase * 5.0
+        + fresh
+    )
 
 
 def bm25_lite_score(title: str, text: str, terms: list[str], essentials: list[str]) -> tuple[float, list[str]]:
@@ -1945,6 +1956,30 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 8, deadline: float
         max(limit * (10 if uses_postgres else 16), 56 if uses_postgres else 72),
         max(max_candidate_floor, limit * 4),
     )
+
+    strict_title_terms = [
+        term
+        for term in ordered_unique([*profile.subjects[:5], *essentials[:6]])
+        if len(term) >= 2 and term not in INTENT_ONLY_TERMS
+    ][:4]
+    if strict_title_terms:
+        title_clauses = []
+        title_params = []
+        for term in strict_title_terms:
+            title_clauses.append("LOWER(title) LIKE ?")
+            title_params.append(f"%{term}%")
+        title_rows = safe_fetchall(
+            conn,
+            f"""
+            SELECT page_id, chunk_index, title, text, created_at, last_updated, author, space, url
+            FROM page_chunks
+            WHERE {" AND ".join(title_clauses)}
+            {"ORDER BY last_updated DESC" if not uses_postgres else ""}
+            LIMIT ?
+            """,
+            [*title_params, max(limit * 4, 20)],
+        )
+        rows_by_id.update({(row["page_id"], row["chunk_index"]): row for row in title_rows})
 
     if not uses_postgres:
         strict_terms = ordered_unique([*profile.subjects[:4], *profile.constraints[:2]])
@@ -2179,6 +2214,7 @@ def final_rank_key(hit: SearchHit, question: str, mode: str) -> tuple[float, str
     keywords = essential_terms(question)[:10] or extract_terms(question)[:10]
     profile = context_profile(question)
     coverage = coverage_ratio_for_terms(keywords, hit.matched_terms)
+    title_coverage = sum(1 for term in keywords if term_in_text(term, hit.title)) / max(len(keywords), 1) if keywords else 0.0
     _, _, context_diagnostics = context_match_score(hit.title, hit.text, profile)
     context_coverage = float(context_diagnostics.get("context_coverage", 0.0))
     phrase_bonus = 0.0
@@ -2191,13 +2227,16 @@ def final_rank_key(hit: SearchHit, question: str, mode: str) -> tuple[float, str
             phrase_bonus += 1.5
     coverage_penalty = 8.0 if keywords and coverage < 0.25 else 0.0
     context_penalty = 7.0 if profile.subjects and context_coverage < 0.25 else 0.0
+    title_penalty = 5.0 if keywords and title_coverage < 0.15 and coverage < 0.55 else 0.0
     return (
         base_score * 0.58
         + quality * 0.34
         + context_coverage * 9.0
+        + title_coverage * 14.0
         + min(phrase_bonus, 10.0)
         - coverage_penalty
-        - context_penalty,
+        - context_penalty
+        - title_penalty,
         hit.last_updated,
     )
 
@@ -2309,11 +2348,17 @@ def apply_recent_repeat_penalties(conn: sqlite3.Connection, hits: Iterable[Searc
     return adjusted
 
 
-def merged_hits(conn: sqlite3.Connection, question: str, mode: str = "balanced") -> list[SearchHit]:
+def merged_hits(
+    conn: sqlite3.Connection,
+    question: str,
+    mode: str = "balanced",
+    time_budget_seconds: float | None = None,
+) -> list[SearchHit]:
     mode = mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced"
     by_id: dict[tuple[str, int], SearchHit] = {}
     votes: dict[tuple[str, int], int] = {}
-    deadline = time.monotonic() + max(1.5, parse_float_env("SEARCH_TIME_BUDGET_SECONDS", 4.8))
+    budget = parse_float_env("SEARCH_TIME_BUDGET_SECONDS", 4.8) if time_budget_seconds is None else time_budget_seconds
+    deadline = time.monotonic() + max(1.0, float(budget))
     per_query_limit = 8 if mode == "broad" else 6 if mode == "recent" else 5
     queries = derive_queries(question, mode)
     queries = queries[:5 if mode == "broad" else 4]
@@ -2619,6 +2664,321 @@ def source_mix_summary(page_hits: list[SearchHit]) -> dict[str, object]:
     }
 
 
+def ranking_eval_query_for_page(title: str, document_type: str) -> str:
+    title_terms = [
+        term
+        for raw_term in question_tokens(title)
+        for term in eval_term_parts(raw_term)
+        if is_informative_eval_term(term)
+    ][:6]
+    intent_hint = {
+        "정책": "최신 정책 기준",
+        "매뉴얼": "운영 매뉴얼 적용 기준",
+        "결정사항": "최종 결정 근거",
+        "회의록": "의사결정 배경 회의록",
+        "기획서": "기획 배경 범위",
+        "이슈": "리스크 예외 이슈",
+    }.get(document_type, "관련 기준 확인")
+    return " ".join([*title_terms[:5], intent_hint]).strip()
+
+
+def eval_normalize_term(term: str) -> str:
+    return re.sub(r"_+", " ", str(term or "").strip("_")).strip()
+
+
+def eval_term_parts(term: str) -> list[str]:
+    return [
+        part
+        for part in eval_normalize_term(term).split()
+        if len(part) >= 2
+    ]
+
+
+def is_informative_eval_term(term: str) -> bool:
+    term = eval_normalize_term(term)
+    generic_terms = {
+        "정책", "기준", "확인", "최신", "최근", "현재", "최종", "관련", "회의", "회의록",
+        "현장", "스토어", "서비스", "관리", "기능", "정의", "자동화", "고객", "운영",
+        "문서", "초안", "협의", "가이드", "매뉴얼", "결정", "근거", "배경",
+    }
+    if term in INTENT_ONLY_TERMS or term in STOPWORDS:
+        return False
+    if term in generic_terms:
+        return False
+    if re.match(r"^\d", term):
+        return False
+    if re.fullmatch(r"\d{1,4}", term):
+        return False
+    if re.fullmatch(r"v?\d+(\.\d+)*", term.lower()):
+        return False
+    return bool(re.search(r"[A-Za-z가-힣]", term)) and len(term) >= 2
+
+
+def eval_relevant_hit_page_ids(question: str, hits: list[dict[str, object]], limit: int = 3) -> list[str]:
+    essentials = [
+        part
+        for raw_term in (essential_terms(question)[:8] or question_tokens(question)[:8])
+        for part in eval_term_parts(raw_term)
+        if is_informative_eval_term(part)
+    ]
+    if not essentials:
+        return []
+    relevant = []
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        title = str(hit.get("title") or "")
+        matched_terms = [str(term) for term in hit.get("matched_terms") or []]
+        covered = [
+            term
+            for term in essentials
+            if term_is_covered(term, matched_terms) or term_in_text(term, title)
+        ]
+        if len(covered) >= max(1, min(2, len(essentials))):
+            page_id = str(hit.get("page_id") or "")
+            if page_id:
+                relevant.append(page_id)
+    return ordered_unique(relevant)[:limit]
+
+
+def ranking_eval_cases_from_history(conn: sqlite3.Connection, limit: int) -> list[dict[str, object]]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, question, hits_json, feedback, created_at
+            FROM query_history
+            WHERE feedback IN ('useful', 'partial', 'bad')
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (max(limit * 2, 12),),
+        ).fetchall()
+    except Exception:
+        return []
+    cases = []
+    for row in rows:
+        try:
+            hits = json.loads(row["hits_json"] or "[]")
+        except Exception:
+            continue
+        feedback = str(row["feedback"] or "")
+        page_ids = eval_relevant_hit_page_ids(row["question"], hits[:8])
+        if not page_ids:
+            if feedback != "bad":
+                continue
+            page_ids = ordered_unique(str(hit.get("page_id") or "") for hit in hits[:3] if isinstance(hit, dict))
+            if not page_ids:
+                continue
+        case = {
+            "id": f"history-{row['id']}",
+            "source": "feedback",
+            "question": row["question"],
+            "expected_page_ids": page_ids[:3] if feedback in {"useful", "partial"} else [],
+            "avoid_page_ids": page_ids[:2] if feedback == "bad" else [],
+            "feedback": feedback,
+            "created_at": row["created_at"],
+        }
+        cases.append(case)
+        if len(cases) >= limit:
+            break
+    return cases
+
+
+def ranking_eval_cases_from_corpus(conn: sqlite3.Connection, limit: int) -> list[dict[str, object]]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT page_id, title, text, created_at, last_updated, author, space, url
+            FROM pages
+            WHERE LENGTH(title) >= 4 AND LENGTH(text) >= 80
+            ORDER BY last_updated DESC, title
+            LIMIT ?
+            """,
+            (max(limit * 8, 80),),
+        ).fetchall()
+    except Exception:
+        return []
+    cases = []
+    seen_signatures = set()
+    preferred_types = {"정책", "매뉴얼", "결정사항", "회의록", "이슈", "기획서"}
+    for row in rows:
+        document_type = classify_document(row["title"], row["text"])
+        title_terms = [
+            term
+            for raw_term in question_tokens(row["title"])
+            for term in eval_term_parts(raw_term)
+            if is_informative_eval_term(term)
+        ]
+        if len(title_terms) < 3:
+            continue
+        signature = " ".join(title_terms[:4])
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        query = ranking_eval_query_for_page(row["title"], document_type)
+        if len(question_tokens(query)) < 3:
+            continue
+        expected_page_ids = related_eval_page_ids_for_terms(conn, title_terms[:4], str(row["page_id"]))
+        priority = 0 if document_type in preferred_types else 1
+        cases.append(
+            {
+                "id": f"corpus-{row['page_id']}",
+                "source": "corpus",
+                "question": query,
+                "expected_page_ids": expected_page_ids,
+                "avoid_page_ids": [],
+                "document_type": document_type,
+                "title": row["title"],
+                "space": row["space"],
+                "last_updated": row["last_updated"],
+                "priority": priority,
+            }
+        )
+    cases.sort(key=lambda item: (item.get("priority", 1), item.get("source", ""), item.get("title", "")))
+    return cases[:limit]
+
+
+def related_eval_page_ids_for_terms(conn: sqlite3.Connection, terms: list[str], fallback_page_id: str) -> list[str]:
+    terms = [term for term in terms if is_informative_eval_term(term)][:4]
+    if len(terms) < 2:
+        return [fallback_page_id]
+    clauses = []
+    params = []
+    for term in terms:
+        clauses.append("LOWER(title) LIKE ?")
+        params.append(f"%{term.lower()}%")
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT page_id, title
+            FROM pages
+            WHERE {" OR ".join(clauses)}
+            ORDER BY last_updated DESC
+            LIMIT 80
+            """,
+            params,
+        ).fetchall()
+    except Exception:
+        return [fallback_page_id]
+    threshold = min(3, len(terms))
+    related = [
+        str(row["page_id"])
+        for row in rows
+        if sum(1 for term in terms if term_in_text(term, row["title"])) >= threshold
+    ]
+    page_ids = ordered_unique([fallback_page_id, *related])
+    return page_ids[:8]
+
+
+def build_ranking_eval_cases(conn: sqlite3.Connection, limit: int = 24) -> list[dict[str, object]]:
+    limit = max(1, min(int(limit), 80))
+    history_cases = ranking_eval_cases_from_history(conn, max(4, min(limit // 3, 16)))
+    corpus_cases = ranking_eval_cases_from_corpus(conn, max(1, limit - len(history_cases)))
+    by_id = {}
+    for case in [*history_cases, *corpus_cases]:
+        by_id.setdefault(case["id"], case)
+    return list(by_id.values())[:limit]
+
+
+def evaluate_ranking_case(
+    conn: sqlite3.Connection,
+    case: dict[str, object],
+    mode: str,
+    time_budget_seconds: float,
+) -> dict[str, object]:
+    started = time.monotonic()
+    hits = merged_hits(conn, str(case["question"]), mode=mode, time_budget_seconds=time_budget_seconds)
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    expected = [str(page_id) for page_id in case.get("expected_page_ids", [])]
+    avoid = [str(page_id) for page_id in case.get("avoid_page_ids", [])]
+    ranked_page_ids = ordered_unique(hit.page_id for hit in hits)
+    rank = None
+    for index, page_id in enumerate(ranked_page_ids, start=1):
+        if page_id in expected:
+            rank = index
+            break
+    avoided_top = bool(ranked_page_ids and ranked_page_ids[0] in avoid)
+    top_hit = hits[0] if hits else None
+    return {
+        "id": case["id"],
+        "source": case.get("source", ""),
+        "question": case["question"],
+        "expected_page_ids": expected,
+        "avoid_page_ids": avoid,
+        "rank": rank,
+        "hit_at_1": bool(rank and rank <= 1),
+        "hit_at_3": bool(rank and rank <= 3),
+        "hit_at_5": bool(rank and rank <= 5),
+        "mrr": round(1 / rank, 3) if rank else 0.0,
+        "avoided_top": avoided_top,
+        "elapsed_ms": elapsed_ms,
+        "top": {
+            "page_id": top_hit.page_id,
+            "title": top_hit.title,
+            "document_type": top_hit.document_type,
+            "score": round(top_hit.score, 2),
+            "last_updated": top_hit.last_updated,
+            "url": top_hit.url,
+        } if top_hit else None,
+    }
+
+
+def ranking_eval_report(
+    conn: sqlite3.Connection,
+    limit: int = 24,
+    mode: str = "balanced",
+    time_budget_seconds: float | None = None,
+) -> dict[str, object]:
+    mode = mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced"
+    cases = build_ranking_eval_cases(conn, limit)
+    budget = time_budget_seconds if time_budget_seconds is not None else parse_float_env("EVAL_SEARCH_TIME_BUDGET_SECONDS", 1.6)
+    results = [evaluate_ranking_case(conn, case, mode, float(budget)) for case in cases]
+    judged = [result for result in results if result["expected_page_ids"]]
+    avoid_cases = [result for result in results if result["avoid_page_ids"]]
+    avg = lambda values: round(sum(values) / max(len(values), 1), 3)
+    metrics = {
+        "case_count": len(results),
+        "judged_count": len(judged),
+        "feedback_case_count": sum(1 for result in results if result["source"] == "feedback"),
+        "corpus_case_count": sum(1 for result in results if result["source"] == "corpus"),
+        "hit_at_1": avg([1 if result["hit_at_1"] else 0 for result in judged]),
+        "hit_at_3": avg([1 if result["hit_at_3"] else 0 for result in judged]),
+        "hit_at_5": avg([1 if result["hit_at_5"] else 0 for result in judged]),
+        "mrr": avg([float(result["mrr"]) for result in judged]),
+        "bad_top_rate": avg([1 if result["avoided_top"] else 0 for result in avoid_cases]) if avoid_cases else 0.0,
+        "avg_elapsed_ms": int(sum(result["elapsed_ms"] for result in results) / max(len(results), 1)),
+    }
+    failed = [
+        result
+        for result in results
+        if (result["expected_page_ids"] and not result["hit_at_5"]) or result["avoided_top"]
+    ][:8]
+    return {
+        "mode": mode,
+        "time_budget_seconds": float(budget),
+        "metrics": metrics,
+        "cases": results,
+        "failed_cases": failed,
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "notes": ranking_eval_notes(metrics),
+    }
+
+
+def ranking_eval_notes(metrics: dict[str, object]) -> list[str]:
+    notes = []
+    if int(metrics.get("feedback_case_count", 0)) < 8:
+        notes.append("피드백 라벨이 적어 corpus 제목 기반 자동 케이스 비중이 높습니다.")
+    if float(metrics.get("hit_at_3", 0)) < 0.7:
+        notes.append("Hit@3가 낮습니다. 제목 exactness, 공식 스페이스 가중치, 동의어 사전을 보강하세요.")
+    if float(metrics.get("bad_top_rate", 0)) > 0:
+        notes.append("부정확 피드백을 받은 문서가 다시 1위에 노출되는 사례가 있습니다.")
+    if int(metrics.get("avg_elapsed_ms", 0)) > 1800:
+        notes.append("평가 평균 검색 시간이 깁니다. 후보 상한이나 평가 시간 예산을 낮춰야 합니다.")
+    if not notes:
+        notes.append("현재 평가셋 기준으로 치명적인 랭킹 회귀 신호는 없습니다.")
+    return notes
+
+
 def search_scorecard(
     page_hits: list[SearchHit],
     hits: list[SearchHit],
@@ -2894,6 +3254,40 @@ def ask(args: argparse.Namespace) -> None:
     print(answer)
 
 
+def eval_ranking(args: argparse.Namespace) -> None:
+    conn = connect_db()
+    try:
+        report_payload = ranking_eval_report(
+            conn,
+            limit=args.limit,
+            mode=args.mode,
+            time_budget_seconds=args.time_budget,
+        )
+    finally:
+        conn.close()
+    if args.json:
+        print(json.dumps(report_payload, ensure_ascii=False, indent=2))
+        return
+    metrics = report_payload["metrics"]
+    print("# 랭킹 평가")
+    print(f"mode={report_payload['mode']} cases={metrics['case_count']} judged={metrics['judged_count']}")
+    print(
+        "hit@1={hit_at_1} hit@3={hit_at_3} hit@5={hit_at_5} mrr={mrr} bad_top_rate={bad_top_rate} avg_ms={avg_elapsed_ms}".format(
+            **metrics
+        )
+    )
+    for note in report_payload["notes"]:
+        print(f"- {note}")
+    if report_payload["failed_cases"]:
+        print("\n## 실패/주의 케이스")
+        for case in report_payload["failed_cases"]:
+            top = case.get("top") or {}
+            print(
+                f"- {case['id']} rank={case['rank']} avoided_top={case['avoided_top']} "
+                f"q={case['question']} top={top.get('title', '-')}"
+            )
+
+
 def main(argv: list[str]) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -2915,6 +3309,13 @@ def main(argv: list[str]) -> int:
     ask_parser = subparsers.add_parser("ask", help="수집된 문서에서 질문 답변을 생성합니다.")
     ask_parser.add_argument("question")
     ask_parser.set_defaults(func=ask)
+
+    eval_parser = subparsers.add_parser("eval-ranking", help="corpus/히스토리 기반 검색 랭킹 평가를 실행합니다.")
+    eval_parser.add_argument("--limit", type=int, default=24, help="평가 케이스 수")
+    eval_parser.add_argument("--mode", default="balanced", choices=["balanced", "strict", "broad", "recent"], help="검색 모드")
+    eval_parser.add_argument("--time-budget", type=float, default=None, help="케이스별 검색 시간 예산 초")
+    eval_parser.add_argument("--json", action="store_true", help="JSON으로 출력")
+    eval_parser.set_defaults(func=eval_ranking)
 
     args = parser.parse_args(argv)
     args.func(args)

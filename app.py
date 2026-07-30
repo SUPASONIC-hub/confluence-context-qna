@@ -19,6 +19,7 @@ from confluence_qna import (
     ingest_progress_status,
     load_config,
     merged_hits,
+    ranking_eval_report,
     search_meta,
     upsert_stored_page,
 )
@@ -1029,6 +1030,34 @@ def admin_diagnostics():
                 },
             }
         )
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@app.get("/api/admin/ranking-eval")
+def admin_ranking_eval():
+    auth_error = require_admin_response()
+    if auth_error:
+        return auth_error
+    limit = max(4, min(env_int("RANKING_EVAL_LIMIT", 12), 24))
+    try:
+        requested_limit = int(request.args.get("limit", limit))
+        limit = max(4, min(requested_limit, 24))
+    except (TypeError, ValueError):
+        pass
+    mode = request.args.get("mode", "balanced")
+    if mode not in {"balanced", "strict", "broad", "recent"}:
+        mode = "balanced"
+    time_budget = max(1.0, min(env_float("EVAL_SEARCH_TIME_BUDGET_SECONDS", 1.6), 3.0))
+    conn = None
+    try:
+        init_history_table()
+        conn = connect_db()
+        return jsonify(ranking_eval_report(conn, limit=limit, mode=mode, time_budget_seconds=time_budget))
+    except Exception as error:
+        logger.exception("Ranking eval failed")
+        return jsonify(error_payload(error)), 500
     finally:
         if conn is not None:
             conn.close()
