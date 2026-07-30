@@ -492,6 +492,42 @@ textarea:focus {
   color: #8a3a2e;
 }
 
+.question-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.question-context:empty {
+  display: none;
+}
+
+.question-context span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border: 1px solid #f2c9be;
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: #fff8f5;
+  color: #7a3429;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.question-context span.filled {
+  border-color: var(--blue);
+  background: #eef9fc;
+  color: var(--blue-deep);
+}
+
+.question-context b {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 button[type="submit"] {
   min-width: 112px;
   height: 40px;
@@ -832,6 +868,11 @@ button[type="submit"]:disabled {
 .search-missing-keywords span {
   background: #fff7f4;
   color: #8a3a2e;
+}
+
+.search-risk-flags span {
+  background: #fff8f5;
+  color: #7a3429;
 }
 
 .search-scorecard {

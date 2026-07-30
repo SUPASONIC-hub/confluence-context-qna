@@ -1238,6 +1238,7 @@ def context_profile(question: str) -> QueryContext:
 
 def query_context_summary(question: str) -> dict[str, object]:
     profile = context_profile(question)
+    missing_dimensions = context_missing_dimensions(profile)
     return {
         "subjects": list(profile.subjects),
         "intents": list(profile.intents),
@@ -1246,6 +1247,8 @@ def query_context_summary(question: str) -> dict[str, object]:
         "polarity": list(profile.polarity),
         "focus_terms": list(profile.focus_terms),
         "completeness": context_completeness(profile),
+        "missing_dimensions": missing_dimensions,
+        "readiness": "충분" if not missing_dimensions else "보강 필요" if len(missing_dimensions) <= 2 else "부족",
     }
 
 
@@ -1258,6 +1261,21 @@ def context_completeness(profile: QueryContext) -> float:
         bool(profile.polarity) or "리스크 예외" in profile.intents or "정상 검증" in profile.intents,
     ]
     return round(sum(1 for item in checks if item) / len(checks), 2)
+
+
+def context_missing_dimensions(profile: QueryContext) -> list[str]:
+    missing = []
+    if not profile.subjects:
+        missing.append("대상")
+    if not profile.intents:
+        missing.append("의도")
+    if not profile.constraints:
+        missing.append("판단 기준")
+    if not profile.temporal:
+        missing.append("최신성")
+    if not profile.polarity and "리스크 예외" not in profile.intents and "정상 검증" not in profile.intents:
+        missing.append("예외/리스크")
+    return missing
 
 
 def context_match_score(title: str, text: str, profile: QueryContext) -> tuple[float, list[str], dict[str, object]]:
@@ -2365,9 +2383,12 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
     issue_code = search_quality_issue_code(page_hits, coverage_ratio, official_count, stale_count, scorecard)
     derived_queries = derive_queries(question, mode)
     score_margin = round(page_hits[0].score - page_hits[1].score, 2) if len(page_hits) >= 2 else None
+    risk_flags = search_risk_flags(page_hits, coverage_ratio, official_count, stale_count, scorecard, context_coverage)
     return {
         "mode": mode if mode in {"balanced", "strict", "broad", "recent"} else "balanced",
         "confidence": confidence_label(page_hits),
+        "decision_readiness": decision_readiness_label(page_hits, scorecard, official_count, context_coverage),
+        "risk_flags": risk_flags,
         "keywords": keywords,
         "query_context": context,
         "context_coverage": context_coverage,
@@ -2390,6 +2411,7 @@ def search_meta(question: str, hits: list[SearchHit], mode: str = "balanced") ->
         "quality_issue_code": issue_code,
         "remediation_steps": search_remediation_steps(issue_code),
         "recommended_mode": recommended_mode(coverage_ratio, official_count, stale_count, len(page_hits)),
+        "source_mix": source_mix_summary(page_hits),
         "latest_updated": max((hit.last_updated for hit in page_hits), default=""),
         "ranker": "hybrid-bm25-context",
         "ranker_features": [
@@ -2539,6 +2561,62 @@ def search_remediation_steps(issue_code: str) -> list[str]:
             "최신성 비교 후 최종 판단",
         ],
     }.get(issue_code, ["검색 품질 패널의 누락 핵심어와 추천 검색어를 확인"])
+
+
+def search_risk_flags(
+    page_hits: list[SearchHit],
+    coverage_ratio: float,
+    official_count: int,
+    stale_count: int,
+    scorecard: dict[str, object],
+    context_coverage: float,
+) -> list[str]:
+    flags = []
+    if not page_hits:
+        return ["결과 없음"]
+    if coverage_ratio < 0.45:
+        flags.append("핵심어 부족")
+    if context_coverage < 0.45:
+        flags.append("문맥 부족")
+    if official_count == 0:
+        flags.append("공식 근거 없음")
+    if stale_count >= max(2, len(page_hits) // 2):
+        flags.append("최신성 취약")
+    if len(page_hits) >= 2 and page_hits[0].score - page_hits[1].score < 3:
+        flags.append("상위 후보 경합")
+    if float(scorecard.get("diversity", 0)) < 0.35 and len(page_hits) >= 2:
+        flags.append("근거 다양성 낮음")
+    return flags[:5] or ["주요 리스크 낮음"]
+
+
+def decision_readiness_label(
+    page_hits: list[SearchHit],
+    scorecard: dict[str, object],
+    official_count: int,
+    context_coverage: float,
+) -> str:
+    if not page_hits:
+        return "근거 부족"
+    overall = float(scorecard.get("overall", 0))
+    if overall >= 0.72 and official_count >= 1 and context_coverage >= 0.55:
+        return "판단 가능"
+    if overall >= 0.45 or official_count >= 1:
+        return "추가 확인"
+    return "근거 부족"
+
+
+def source_mix_summary(page_hits: list[SearchHit]) -> dict[str, object]:
+    spaces = {hit.space for hit in page_hits if hit.space}
+    doc_types = {hit.document_type for hit in page_hits if hit.document_type}
+    official_types = {"정책", "매뉴얼", "결정사항"}
+    official_like = sum(1 for hit in page_hits if hit.document_type in official_types)
+    return {
+        "space_count": len(spaces),
+        "doc_type_count": len(doc_types),
+        "official_ratio": round(official_like / max(len(page_hits), 1), 2) if page_hits else 0.0,
+        "spaces": sorted(spaces)[:6],
+        "doc_types": sorted(doc_types)[:6],
+    }
 
 
 def search_scorecard(
