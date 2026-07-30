@@ -112,6 +112,7 @@ python .\confluence_qna.py eval-ranking --limit 24 --mode balanced
 ```
 
 평가셋은 피드백이 있는 질문 히스토리와 실제 Confluence 문서 제목/유형에서 생성한 자동 gold case를 함께 사용합니다. `hit@3`, `MRR`, `bad_top_rate`, 평균 검색 시간을 확인해 검색 변경 전후를 비교하세요. `--json`을 붙이면 CI나 외부 리포트에서 쓰기 쉬운 JSON으로 출력합니다.
+정확한 평가를 위해 실제 검색 결과에는 `유용`, `부분적`, `부정확` 피드백을 꾸준히 남기세요. 피드백 라벨이 적으면 자동 gold case 비중이 커져 제목 재현성은 검증할 수 있지만 실제 업무 판단 품질 평가는 제한됩니다.
 
 ## 5. Knowledge Management 인터페이스
 

@@ -257,6 +257,81 @@ button,
   overflow-wrap: anywhere;
 }
 
+.ranking-eval-summary {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfdff;
+}
+
+.ranking-eval-summary:empty {
+  display: none;
+}
+
+.ranking-eval-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.ranking-eval-metrics span {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.ranking-eval-metrics b {
+  display: block;
+  overflow: hidden;
+  color: var(--blue-deep);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-eval-summary p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ranking-eval-failures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ranking-eval-failures button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 8px;
+  background: #fff;
+  color: var(--blue-deep);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.ranking-eval-failures button:hover {
+  border-color: var(--blue-strong);
+  background: #eef9fc;
+}
+
+.ranking-eval-failures span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .progress-track {
   height: 8px;
   overflow: hidden;

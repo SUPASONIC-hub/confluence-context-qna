@@ -26,6 +26,7 @@ const runBatchButton = document.querySelector("#runBatchButton");
 const resetBatchButton = document.querySelector("#resetBatchButton");
 const diagnosticsButton = document.querySelector("#diagnosticsButton");
 const rankingEvalButton = document.querySelector("#rankingEvalButton");
+const rankingEvalSummary = document.querySelector("#rankingEvalSummary");
 const refreshStatsButton = document.querySelector("#refreshStats");
 const exportLink = document.querySelector("#exportLink");
 const jsonBackupButton = document.querySelector("#jsonBackupButton");
@@ -34,6 +35,7 @@ const restoreBackupInput = document.querySelector("#restoreBackupInput");
 const copyAnswerButton = document.querySelector("#copyAnswerButton");
 const rerunQuestionButton = document.querySelector("#rerunQuestionButton");
 const usefulFeedbackButton = document.querySelector("#usefulFeedbackButton");
+const partialFeedbackButton = document.querySelector("#partialFeedbackButton");
 const badFeedbackButton = document.querySelector("#badFeedbackButton");
 const opsStatus = document.querySelector("#opsStatus");
 const ingestProgressBar = document.querySelector("#ingestProgressBar");
@@ -480,6 +482,26 @@ function renderRankingEval(payload) {
     `MRR ${metrics.mrr ?? 0} · bad@1 ${metrics.bad_top_rate ?? 0} · avg ${metrics.avg_elapsed_ms ?? 0}ms` +
     `${notes ? ` · ${notes}` : ""}${failed ? ` · 주의 ${failed}` : ""}`
   );
+  if (!rankingEvalSummary) return;
+  const failedButtons = (payload.failed_cases || [])
+    .slice(0, 4)
+    .map((item) => `
+      <button type="button" data-eval-question="${escapeText(item.question || "")}">
+        ${escapeText(item.question || item.id || "실패 케이스")}
+      </button>
+    `)
+    .join("");
+  rankingEvalSummary.innerHTML = `
+    <div class="ranking-eval-metrics">
+      <span><b>${escapeText(String(metrics.case_count ?? 0))}</b>cases</span>
+      <span><b>${escapeText(String(metrics.hit_at_3 ?? 0))}</b>hit@3</span>
+      <span><b>${escapeText(String(metrics.mrr ?? 0))}</b>MRR</span>
+      <span><b>${escapeText(String(metrics.bad_top_rate ?? 0))}</b>bad@1</span>
+      <span><b>${escapeText(String(metrics.avg_elapsed_ms ?? 0))}</b>ms</span>
+    </div>
+    <p>${escapeText(notes || "현재 평가셋 기준 주요 회귀 신호 없음")}</p>
+    <div class="ranking-eval-failures">${failedButtons || "<span>주의 케이스 없음</span>"}</div>
+  `;
 }
 
 function renderHistory(items = allHistoryItems) {
@@ -1240,6 +1262,10 @@ function renderFeedbackButtons() {
     usefulFeedbackButton.disabled = disabled;
     usefulFeedbackButton.classList.toggle("active", currentFeedback === "useful");
   }
+  if (partialFeedbackButton) {
+    partialFeedbackButton.disabled = disabled;
+    partialFeedbackButton.classList.toggle("active", currentFeedback === "partial");
+  }
   if (badFeedbackButton) {
     badFeedbackButton.disabled = disabled;
     badFeedbackButton.classList.toggle("active", currentFeedback === "bad");
@@ -1272,6 +1298,10 @@ function feedbackLabel(value) {
 
 if (usefulFeedbackButton) {
   usefulFeedbackButton.addEventListener("click", () => submitFeedback("useful"));
+}
+
+if (partialFeedbackButton) {
+  partialFeedbackButton.addEventListener("click", () => submitFeedback("partial"));
 }
 
 if (badFeedbackButton) {
@@ -1586,6 +1616,17 @@ if (rankingEvalButton) {
     } finally {
       rankingEvalButton.disabled = false;
     }
+  });
+}
+
+if (rankingEvalSummary) {
+  rankingEvalSummary.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-eval-question]");
+    if (!button) return;
+    questionInput.value = button.dataset.evalQuestion || "";
+    updateQuestionQuality();
+    questionInput.focus();
+    document.querySelector(".query-panel")?.scrollIntoView({ block: "start", behavior: "smooth" });
   });
 }
 

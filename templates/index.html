@@ -39,6 +39,7 @@
             <button id="diagnosticsButton" type="button">상태 점검</button>
             <button id="rankingEvalButton" type="button">랭킹 평가</button>
           </div>
+          <div id="rankingEvalSummary" class="ranking-eval-summary"></div>
           <div class="progress-track" aria-label="수집 진행률">
             <span id="ingestProgressBar"></span>
           </div>
@@ -95,6 +96,7 @@
               <div class="result-actions">
                 <span id="resultMeta">대기 중</span>
                 <button id="usefulFeedbackButton" type="button" disabled>유용</button>
+                <button id="partialFeedbackButton" type="button" disabled>부분적</button>
                 <button id="badFeedbackButton" type="button" disabled>부정확</button>
                 <button id="copyAnswerButton" type="button" disabled>복사</button>
                 <button id="rerunQuestionButton" type="button" disabled>다시 질문</button>
@@ -135,6 +137,6 @@
       </main>
     </div>
 
-    <script src="{{ url_for('static', filename='app.js', v='20260730-2') }}"></script>
+    <script src="{{ url_for('static', filename='app.js', v='20260730-3') }}"></script>
   </body>
 </html>
